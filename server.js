@@ -54,6 +54,7 @@ import mediaRoutes from "./routes/mediaRoutes.js";
 import submissionRoutes from "./routes/submissionRoutes.js";
 import adminRoutes from "./routes/adminRoutes.js";
 import pressReleaseRoutes from "./routes/pressReleaseRoutes.js";
+import searchRoutes from "./routes/searchRoutes.js";
 
 // Get __dirname equivalent in ES modules
 const __filename = fileURLToPath(import.meta.url);
@@ -80,6 +81,7 @@ app.use("/api/media", mediaRoutes);
 app.use("/api/submissions", submissionRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/press-releases", pressReleaseRoutes);
+app.use("/api/search", searchRoutes);
 
 app.get("/", (req, res) => {
   res.json({ message: "Backend is running 🚀" });
