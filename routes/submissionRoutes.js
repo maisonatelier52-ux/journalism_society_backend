@@ -184,6 +184,7 @@ import multer from "multer";
 import path from "path";
 import fs from "fs";
 import Submission from "../models/Submission.js";
+import Docket from "../models/Docket.js"
 
 const router = express.Router();
 
@@ -208,10 +209,40 @@ const upload = multer({
   limits: { fileSize: 25 * 1024 * 1024 },
 });
 
+// Helper: Check if a docket with same claim URL or response title already exists
+const checkSubmissionExists = async (claimUrl, responseTitle) => {
+  const query = {
+    $or: [
+      { "claim.url": claimUrl },
+      { "response.title": responseTitle }
+    ]
+  };
+  
+  // Only check if values are provided
+  if (!claimUrl && !responseTitle) return false;
+  
+  const existing = await Docket.findOne(query);
+  return !!existing;
+};
 // Submit a new Right of Reply (goes to submissions collection)
 router.post("/", upload.array("files", 10), async (req, res) => {
   try {
     console.log("📝 New submission received");
+    
+    // Check if submission with same claim URL or response title already exists
+    const exists = await checkSubmissionExists(req.body.claimUrl, req.body.responseTitle);
+    if (exists) {
+      // Clean up uploaded files
+      if (req.files) {
+        req.files.forEach(file => {
+          if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+        });
+      }
+      return res.status(409).json({ 
+        success: false, 
+        message: "A submission with this claim URL or response title already exists. Please check your existing submissions." 
+      });
+    }
     
     // Parse timeline
     let timeline = [];
@@ -234,7 +265,6 @@ router.post("/", upload.array("files", 10), async (req, res) => {
       uploadedAt: new Date(),
     })) : [];
     
-    // Create submission (NOT a docket yet)
     const submission = new Submission({
       respondentName: req.body.respondentName,
       respondentType: req.body.respondentType,
@@ -273,12 +303,9 @@ router.post("/", upload.array("files", 10), async (req, res) => {
   } catch (error) {
     console.error("❌ Submission error:", error);
     
-    // Clean up files on error
     if (req.files) {
       req.files.forEach(file => {
-        if (fs.existsSync(file.path)) {
-          fs.unlinkSync(file.path);
-        }
+        if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
       });
     }
     

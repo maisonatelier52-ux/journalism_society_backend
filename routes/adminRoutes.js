@@ -1030,6 +1030,71 @@ const protectedRoutes = [
 
 router.use(protectedRoutes, verifyAdminToken);
 
+
+// Add this helper function at the top of adminRoutes.js after imports
+
+// Helper: Check if media with same URL exists for a docket
+const checkMediaExistsByUrl = async (url, docketId, excludeId = null) => {
+  const query = { url, docketId };
+  if (excludeId) query._id = { $ne: excludeId };
+  const existing = await Media.findOne(query);
+  return !!existing;
+};
+
+// Helper: Check if submission with same claim URL and response title exists
+const checkSubmissionExists = async (claimUrl, responseTitle, excludeId = null) => {
+  const query = {
+    $or: [
+      { claimUrl: claimUrl },
+      { responseTitle: responseTitle }
+    ]
+  };
+  if (excludeId) query._id = { $ne: excludeId };
+  const existing = await Submission.findOne(query);
+  return !!existing;
+};
+
+// Helper: Check if docket with same claim URL or response title exists
+const checkDocketExists = async (claimUrl, responseTitle, excludeId = null) => {
+  const query = {
+    $or: [
+      { "claim.url": claimUrl },
+      { "response.title": responseTitle }
+    ]
+  };
+  if (excludeId) query._id = { $ne: excludeId };
+  const existing = await Docket.findOne(query);
+  return !!existing;
+};
+
+// Helper: Check if press release with same title exists
+const checkPressReleaseExists = async (title, excludeId = null) => {
+  const PressRelease = mongoose.model("PressRelease");
+  const query = { title: { $regex: new RegExp(`^${title}$`, 'i') } };
+  if (excludeId) query._id = { $ne: excludeId };
+  const existing = await PressRelease.findOne(query);
+  return !!existing;
+};
+
+const checkMediaExistsForDocket = async (url, docketId, excludeId = null) => {
+  const existingMedia = await Media.findOne({ 
+    url, 
+    docketId,
+    ...(excludeId && { _id: { $ne: excludeId } })
+  });
+  if (existingMedia) return { exists: true, source: "approved" };
+  
+  const existingSubmission = await MediaSubmission.findOne({ 
+    url, 
+    docketId,
+    status: "pending",
+    ...(excludeId && { _id: { $ne: excludeId } })
+  });
+  if (existingSubmission) return { exists: true, source: "pending" };
+  
+  return { exists: false };
+};
+
 // ============ ACTIVITY LOG HELPER ============
 const logActivity = (action, entityType, entityId, entityTitle, entitySubtitle = "") => {
   ActivityLog.create({
@@ -1306,6 +1371,15 @@ router.post("/create-docket", async (req, res) => {
     const { submissionId, docketData } = req.body;
     const submission = await Submission.findById(submissionId);
     if (!submission) return res.status(404).json({ success: false, message: "Submission not found" });
+    
+    // Check if docket with same claim URL or response title already exists
+    const exists = await checkDocketExists(submission.claimUrl, docketData.title);
+    if (exists) {
+      return res.status(409).json({ 
+        success: false, 
+        message: "A docket with this claim URL or response title already exists. Please check existing dockets." 
+      });
+    }
 
     const formattedTimeline = (docketData.timeline || []).map((entry) => ({
       date: entry.date || "",
@@ -1519,11 +1593,31 @@ router.post("/media-submissions", async (req, res) => {
   }
 });
 
+// Update the media-submissions/:id/approve endpoint
 router.post("/media-submissions/:id/approve", async (req, res) => {
   try {
     const { stance, summary, adminNotes } = req.body;
     const submission = await MediaSubmission.findById(req.params.id);
     if (!submission) return res.status(404).json({ success: false, message: "Submission not found" });
+    
+    // Check if media with same URL already exists for this docket
+    const duplicateCheck = await checkMediaExistsForDocket(submission.url, submission.docketId, submission._id);
+    
+    if (duplicateCheck.exists) {
+      let message = "";
+      if (duplicateCheck.source === "approved") {
+        message = "A media entry with this URL has already been approved for this docket.";
+      } else if (duplicateCheck.source === "pending") {
+        message = "Another pending submission with this URL already exists for this docket.";
+      }
+      
+      if (message) {
+        return res.status(409).json({ 
+          success: false, 
+          message: message
+        });
+      }
+    }
 
     const media = new Media({
       outlet: submission.outlet,
@@ -1558,6 +1652,7 @@ router.post("/media-submissions/:id/approve", async (req, res) => {
   }
 });
 
+
 router.post("/media-submissions/:id/reject", async (req, res) => {
   try {
     const { reason } = req.body;
@@ -1578,6 +1673,16 @@ router.post("/media-submissions/:id/reject", async (req, res) => {
 router.post("/media/create", async (req, res) => {
   try {
     const { outlet, headline, url, date, type, stance, summary, docketId } = req.body;
+    
+    // Check if media with same URL already exists for this docket
+    const exists = await checkMediaExistsByUrl(url, docketId);
+    if (exists) {
+      return res.status(409).json({ 
+        success: false, 
+        message: "A media entry with this URL already exists for this docket. Please check existing entries." 
+      });
+    }
+    
     const docket = await Docket.findById(docketId);
     if (!docket) return res.status(404).json({ success: false, message: "Docket not found" });
 
@@ -1639,16 +1744,63 @@ router.get("/media/by-docket/:docketId", async (req, res) => {
   }
 });
 
-router.post("/media/:id/approve", async (req, res) => {
+// router.post("/media/:id/approve", async (req, res) => {
+//   try {
+//     const media = await Media.findById(req.params.id);
+//     if (!media) return res.status(404).json({ success: false, message: "Media not found" });
+//     media.status = "approved";
+//     media.approvedAt = new Date();
+//     await media.save();
+//     logActivity("updated", "media", media._id, media.headline, media.outlet);
+//     res.json({ success: true, message: "Media approved", media });
+//   } catch (error) {
+//     res.status(500).json({ success: false, message: error.message });
+//   }
+// });
+router.post("/media-submissions/:id/approve", async (req, res) => {
   try {
-    const media = await Media.findById(req.params.id);
-    if (!media) return res.status(404).json({ success: false, message: "Media not found" });
-    media.status = "approved";
-    media.approvedAt = new Date();
+    const { stance, summary, adminNotes } = req.body;
+    const submission = await MediaSubmission.findById(req.params.id);
+    if (!submission) return res.status(404).json({ success: false, message: "Submission not found" });
+    
+    // Check if media with same URL already exists for this docket
+    const exists = await checkMediaExistsByUrl(submission.url, submission.docketId);
+    if (exists) {
+      return res.status(409).json({ 
+        success: false, 
+        message: "A media entry with this URL already exists for this docket. Please check existing entries before approving." 
+      });
+    }
+
+    const media = new Media({
+      outlet: submission.outlet,
+      headline: submission.headline,
+      date: submission.date,
+      type: submission.type,
+      stance: stance || "neutral",
+      url: submission.url,
+      summary: summary || submission.note || "",
+      docketId: submission.docketId,
+      docketNumber: submission.docketNumber,
+      source: "user_submission",
+      sourceSubmissionId: submission._id,
+      status: "approved",
+      approvedAt: new Date(),
+      publishedDate: new Date(),
+    });
     await media.save();
-    logActivity("updated", "media", media._id, media.headline, media.outlet);
-    res.json({ success: true, message: "Media approved", media });
+
+    submission.status = "approved";
+    submission.approvedAt = new Date();
+    submission.adminNotes = adminNotes || "";
+    submission.stance = stance || "neutral";
+    await submission.save();
+
+    logActivity("created", "media", media._id, media.headline, media.outlet);
+
+    res.json({ success: true, message: "Media approved and published", media });
   } catch (error) {
+    console.error("Approval error:", error);
     res.status(500).json({ success: false, message: error.message });
   }
 });
@@ -1670,12 +1822,26 @@ router.post("/media/:id/reject", async (req, res) => {
 router.patch("/media/:id", async (req, res) => {
   try {
     const { outlet, headline, url, date, type, stance, summary } = req.body;
+    
+    const existingMedia = await Media.findById(req.params.id);
+    if (!existingMedia) return res.status(404).json({ success: false, message: "Media not found" });
+    
+    if (url && url !== existingMedia.url) {
+      const duplicateCheck = await checkMediaExistsForDocket(url, existingMedia.docketId, req.params.id);
+      if (duplicateCheck.exists) {
+        return res.status(409).json({ 
+          success: false, 
+          message: `A media entry with this URL already exists for this docket (${duplicateCheck.source}).` 
+        });
+      }
+    }
+    
     const media = await Media.findByIdAndUpdate(
       req.params.id,
       { outlet, headline, url, date, type, stance, summary, updatedAt: new Date() },
       { new: true }
     );
-    if (!media) return res.status(404).json({ success: false, message: "Media not found" });
+    
     logActivity("updated", "media", media._id, media.headline, media.outlet);
     res.json({ success: true, media });
   } catch (error) {
@@ -1756,6 +1922,15 @@ router.delete("/documents/:id", async (req, res) => {
 router.post("/create-docket-direct", async (req, res) => {
   try {
     const { docketData } = req.body;
+    
+    // Check if docket with same claim URL or response title already exists
+    const exists = await checkDocketExists(docketData.claim.url, docketData.title);
+    if (exists) {
+      return res.status(409).json({ 
+        success: false, 
+        message: "A docket with this claim URL or response title already exists. Please check existing dockets." 
+      });
+    }
 
     const formattedTimeline = (docketData.timeline || []).map((entry) => ({
       date: entry.date || "",
@@ -1966,6 +2141,16 @@ router.get("/press-releases/:id", async (req, res) => {
 router.post("/press-releases", async (req, res) => {
   try {
     const PressRelease = mongoose.model("PressRelease");
+    
+    // Check if press release with same title already exists
+    const exists = await checkPressReleaseExists(req.body.title);
+    if (exists) {
+      return res.status(409).json({ 
+        success: false, 
+        message: "A press release with this title already exists. Please use a different title." 
+      });
+    }
+    
     const release = new PressRelease(req.body);
     await release.save();
     logActivity("created", "press_release", release._id, release.title, release.category);
@@ -1978,12 +2163,27 @@ router.post("/press-releases", async (req, res) => {
 router.patch("/press-releases/:id", async (req, res) => {
   try {
     const PressRelease = mongoose.model("PressRelease");
+    
+    const existing = await PressRelease.findById(req.params.id);
+    if (!existing) return res.status(404).json({ success: false, message: "Press release not found" });
+    
+    // If title is being changed, check for duplicates
+    if (req.body.title && req.body.title !== existing.title) {
+      const exists = await checkPressReleaseExists(req.body.title, req.params.id);
+      if (exists) {
+        return res.status(409).json({ 
+          success: false, 
+          message: "A press release with this title already exists. Please use a different title." 
+        });
+      }
+    }
+    
     const release = await PressRelease.findByIdAndUpdate(
       req.params.id,
       { ...req.body, updatedAt: new Date() },
       { new: true }
     );
-    if (!release) return res.status(404).json({ success: false, message: "Press release not found" });
+    
     logActivity("updated", "press_release", release._id, release.title, release.category);
     res.json({ success: true, release });
   } catch (error) {
@@ -2030,6 +2230,7 @@ router.post(
     }
   }
 );
+
 
 export default router;
 
