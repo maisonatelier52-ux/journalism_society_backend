@@ -1095,6 +1095,33 @@ const checkMediaExistsForDocket = async (url, docketId, excludeId = null) => {
   return { exists: false };
 };
 
+// Helper: Check if docket with same claim URL or response title exists (for update, excluding current)
+const checkDocketExistsForUpdate = async (claimUrl, responseTitle, excludeId, currentClaimUrl, currentResponseTitle) => {
+  // Only check if the values have changed
+  const needToCheck = (claimUrl && claimUrl !== currentClaimUrl) || 
+                       (responseTitle && responseTitle !== currentResponseTitle);
+  
+  if (!needToCheck) return false;
+  
+  const conditions = [];
+  if (claimUrl && claimUrl !== currentClaimUrl && claimUrl !== "") {
+    conditions.push({ "claim.url": claimUrl });
+  }
+  if (responseTitle && responseTitle !== currentResponseTitle && responseTitle !== "") {
+    conditions.push({ "response.title": responseTitle });
+  }
+  
+  if (conditions.length === 0) return false;
+  
+  const query = {
+    $or: conditions,
+    _id: { $ne: excludeId }
+  };
+  
+  const existing = await Docket.findOne(query);
+  return !!existing;
+};
+
 // ============ ACTIVITY LOG HELPER ============
 const logActivity = (action, entityType, entityId, entityTitle, entitySubtitle = "") => {
   ActivityLog.create({
@@ -1419,18 +1446,20 @@ router.post("/create-docket", async (req, res) => {
 
     await docket.save();
 
+    // Create documents for exhibits
     if (docketData.exhibits?.length > 0) {
       for (const exhibit of docketData.exhibits) {
         await new Document({
           title: exhibit.title,
           type: exhibit.category || "Evidence",
-          description: `Exhibit from docket ${docket.docketId}`,
+          description: exhibit.description || `Exhibit from docket ${docket.docketId}`,
           fileUrl: exhibit.fileUrl,
           fileName: exhibit.title,
           fileSize: exhibit.fileSize,
           fileType: exhibit.fileType,
           sourceDocketId: docket._id,
           sourceDocketNumber: docket.docketId,
+          exhibitId: exhibit.exhibitId,
           publishedDate: new Date(),
           addedBy: "admin",
           checksum: exhibit.checksum || null,
@@ -1969,18 +1998,20 @@ router.post("/create-docket-direct", async (req, res) => {
 
     await docket.save();
 
+    // Create documents for exhibits
     if (docketData.exhibits?.length > 0) {
       for (const exhibit of docketData.exhibits) {
         await new Document({
           title: exhibit.title,
           type: exhibit.category || "Evidence",
-          description: `Exhibit from docket ${docket.docketId}`,
+          description: exhibit.description || `Exhibit from docket ${docket.docketId}`,
           fileUrl: exhibit.fileUrl,
           fileName: exhibit.title,
           fileSize: exhibit.fileSize,
           fileType: exhibit.fileType,
           sourceDocketId: docket._id,
           sourceDocketNumber: docket.docketId,
+          exhibitId: exhibit.exhibitId,
           publishedDate: new Date(),
           addedBy: "admin",
           checksum: exhibit.checksum || null,
@@ -2002,6 +2033,7 @@ router.post("/create-docket-direct", async (req, res) => {
 });
 
 // ============ UPDATE DOCKET FULL ============
+// ============ UPDATE DOCKET FULL (with Document sync) ============
 router.patch("/dockets/:id/full", async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -2010,6 +2042,36 @@ router.patch("/dockets/:id/full", async (req, res) => {
     const { id } = req.params;
     const { docketData, deletedExhibits, deletedMedia, mediaItems } = req.body;
 
+    // Get existing docket to check for duplicates
+    const existingDocket = await Docket.findById(id);
+    if (!existingDocket) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({ success: false, message: "Docket not found" });
+    }
+
+    // Check for duplicates if claim URL or response title changed
+    const newClaimUrl = docketData.claim?.url || existingDocket.claim.url;
+    const newResponseTitle = docketData.response?.title || existingDocket.response.title;
+    
+    const exists = await checkDocketExistsForUpdate(
+      newClaimUrl, 
+      newResponseTitle, 
+      id,
+      existingDocket.claim.url,
+      existingDocket.response.title
+    );
+    
+    if (exists) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(409).json({ 
+        success: false, 
+        message: "A docket with this claim URL or response title already exists. Please use different values." 
+      });
+    }
+
+    // Update the docket
     const docket = await Docket.findByIdAndUpdate(
       id,
       {
@@ -2031,49 +2093,64 @@ router.patch("/dockets/:id/full", async (req, res) => {
       return res.status(404).json({ success: false, message: "Docket not found" });
     }
 
+    // Handle deleted exhibits - remove from Document model
     if (deletedExhibits?.length > 0) {
-      await Document.deleteMany({
-        sourceDocketId: id,
-        exhibitId: { $in: deletedExhibits },
-      }).session(session);
+      // Find and delete documents that match the deleted exhibit IDs
+      for (const exhibitId of deletedExhibits) {
+        await Document.deleteMany({
+          sourceDocketId: id,
+          "exhibitId": exhibitId
+        }).session(session);
+      }
     }
 
+    // Sync exhibits with Document model
     if (docketData.exhibits?.length > 0) {
       for (const exhibit of docketData.exhibits) {
+        // Check if this exhibit already exists as a document
         const existingDoc = await Document.findOne({
           sourceDocketId: id,
-          title: exhibit.title,
+          exhibitId: exhibit.exhibitId
         }).session(session);
 
-        if (!existingDoc && exhibit.fileUrl) {
+        if (existingDoc) {
+          // Update existing document
+          existingDoc.title = exhibit.title;
+          existingDoc.type = exhibit.category || "Evidence";
+          existingDoc.description = exhibit.description || `Exhibit from docket ${docket.docketId}`;
+          existingDoc.fileUrl = exhibit.fileUrl;
+          existingDoc.fileName = exhibit.title;
+          existingDoc.fileSize = exhibit.fileSize;
+          existingDoc.fileType = exhibit.fileType;
+          existingDoc.sourceDocketNumber = docket.docketId;
+          existingDoc.updatedAt = new Date();
+          await existingDoc.save({ session });
+        } else if (exhibit.fileUrl && exhibit.title) {
+          // Create new document for this exhibit
           await new Document({
             title: exhibit.title,
             type: exhibit.category || "Evidence",
-            description: `Exhibit from docket ${docket.docketId}`,
+            description: exhibit.description || `Exhibit from docket ${docket.docketId}`,
             fileUrl: exhibit.fileUrl,
             fileName: exhibit.title,
             fileSize: exhibit.fileSize,
             fileType: exhibit.fileType,
             sourceDocketId: docket._id,
             sourceDocketNumber: docket.docketId,
+            exhibitId: exhibit.exhibitId,
             publishedDate: new Date(),
             addedBy: "admin",
           }).save({ session });
-        } else if (existingDoc && exhibit.fileUrl !== existingDoc.fileUrl) {
-          existingDoc.fileUrl = exhibit.fileUrl;
-          existingDoc.fileSize = exhibit.fileSize;
-          existingDoc.fileType = exhibit.fileType;
-          existingDoc.title = exhibit.title;
-          existingDoc.type = exhibit.category || "Evidence";
-          await existingDoc.save({ session });
         }
       }
     }
 
+    // Handle deleted media
     if (deletedMedia?.length > 0) {
       await Media.deleteMany({ _id: { $in: deletedMedia } }).session(session);
     }
 
+    // Handle media items
     if (mediaItems?.length > 0) {
       for (const media of mediaItems) {
         if (media._id) {

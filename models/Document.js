@@ -1,4 +1,4 @@
-// models/Document.js (Simplified version)
+// models/Document.js
 import mongoose from "mongoose";
 
 const documentSchema = new mongoose.Schema(
@@ -30,6 +30,10 @@ const documentSchema = new mongoose.Schema(
     fileSize: Number,
     fileType: String,
     checksum: String,
+    exhibitId: {
+      type: String,
+      default: null,
+    },
     sourceDocketId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Docket",
