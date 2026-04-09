@@ -53,12 +53,15 @@ const documentSchema = new mongoose.Schema(
   }
 );
 
-// Generate document ID
-documentSchema.pre("save", async function() {
+// Generate document ID — uses timestamp + random to avoid collisions
+// The old count-based approach (DOC-0001, DOC-0002...) causes E11000 errors
+// when multiple documents are created concurrently in the same transaction
+documentSchema.pre("save", async function () {
   if (this.isNew && !this.documentId) {
-    const Document = mongoose.model("Document");
-    const count = await Document.countDocuments();
-    this.documentId = `DOC-${String(count + 1).padStart(4, "0")}`;
+    // Use timestamp + random suffix for collision-proof IDs
+    const ts = Date.now().toString(36).toUpperCase();
+    const rand = Math.floor(Math.random() * 9000 + 1000);
+    this.documentId = `DOC-${ts}-${rand}`;
   }
 });
 

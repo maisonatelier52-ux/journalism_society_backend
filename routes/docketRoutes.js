@@ -16,23 +16,3 @@ router.get("/:id", async (req, res) => {
 });
 
 export default router;
-
-// // routes/docketRoutes.js
-// import express from "express";
-// import {
-//   getAllDockets,
-//   getDocketById,
-//   getDocketByDocketId,
-//   updateDocket,
-//   deleteDocket,
-// } from "../controllers/docketController.js";
-
-// const router = express.Router();
-
-// router.get("/", getAllDockets);
-// router.get("/:id", getDocketById);
-// router.get("/by-docket-id/:docketId", getDocketByDocketId);   // Optional
-// router.patch("/:id", updateDocket);
-// router.delete("/:id", deleteDocket);
-
-// export default router;
