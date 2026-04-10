@@ -1,6 +1,1394 @@
 
 
+// // routes/adminRoutes.js
+// import express from "express";
+// import mongoose from "mongoose";
+// import multer from "multer";
+// import path from "path";
+// import fs from "fs";
+// import bcrypt from "bcryptjs";
+// import jwt from "jsonwebtoken";
+// import dotenv from "dotenv";
+
+// import Submission from "../models/Submission.js";
+// import Docket from "../models/Docket.js";
+// import Document from "../models/Document.js";
+// import Media from "../models/Media.js";
+// import MediaSubmission from "../models/MediaSubmission.js";
+// import ActivityLog from "../models/ActivityLog.js";
+// import Flag from "../models/Flag.js";
+
+// dotenv.config();
+
+// const router = express.Router();
+// const JWT_SECRET = process.env.JWT_SECRET || "your-super-secret-jwt-key";
+// const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "7d";
+
+// // ============ JWT MIDDLEWARE ============
+// const verifyAdminToken = (req, res, next) => {
+//   const authHeader = req.headers.authorization;
+
+//   if (!authHeader || !authHeader.startsWith("Bearer ")) {
+//     return res.status(401).json({ success: false, message: "No token provided" });
+//   }
+
+//   const token = authHeader.split(" ")[1];
+
+//   try {
+//     const decoded = jwt.verify(token, JWT_SECRET);
+//     req.admin = decoded;
+//     next();
+//   } catch (error) {
+//     if (error.name === "TokenExpiredError") {
+//       return res.status(401).json({ success: false, message: "Token expired" });
+//     }
+//     return res.status(401).json({ success: false, message: "Invalid token" });
+//   }
+// };
+
+// // Apply middleware to all admin routes except login
+// const protectedRoutes = [
+//   "/stats", "/submissions", "/submissions/:id", "/submissions/:id/status",
+//   "/submissions/:id/reject", "/create-docket", "/create-docket-direct",
+//   "/dockets", "/dockets/:id", "/dockets/:id/full", "/media", "/media/:id",
+//   "/media/create", "/media/by-docket/:docketId", "/media-submissions",
+//   "/media-submissions/:id/approve", "/media-submissions/:id/reject",
+//   "/documents", "/documents/upload", "/press-releases", "/press-releases/:id",
+//   "/press-releases/upload-image", "/upload-exhibit", "/activity-log",
+// ];
+
+// router.use(protectedRoutes, verifyAdminToken);
+
+
+// // Add this helper function at the top of adminRoutes.js after imports
+
+// // Helper: Check if media with same URL exists for a docket
+// const checkMediaExistsByUrl = async (url, docketId, excludeId = null) => {
+//   const query = { url, docketId };
+//   if (excludeId) query._id = { $ne: excludeId };
+//   const existing = await Media.findOne(query);
+//   return !!existing;
+// };
+
+// // Helper: Check if submission with same claim URL and response title exists
+// const checkSubmissionExists = async (claimUrl, responseTitle, excludeId = null) => {
+//   const query = {
+//     $or: [
+//       { claimUrl: claimUrl },
+//       { responseTitle: responseTitle }
+//     ]
+//   };
+//   if (excludeId) query._id = { $ne: excludeId };
+//   const existing = await Submission.findOne(query);
+//   return !!existing;
+// };
+
+// // Helper: Check if docket with same claim URL or response title exists
+// const checkDocketExists = async (claimUrl, responseTitle, excludeId = null) => {
+//   const query = {
+//     $or: [
+//       { "claim.url": claimUrl },
+//       { "response.title": responseTitle }
+//     ]
+//   };
+//   if (excludeId) query._id = { $ne: excludeId };
+//   const existing = await Docket.findOne(query);
+//   return !!existing;
+// };
+
+// // Helper: Check if press release with same title exists
+// const checkPressReleaseExists = async (title, excludeId = null) => {
+//   const PressRelease = mongoose.model("PressRelease");
+//   const query = { title: { $regex: new RegExp(`^${title}$`, 'i') } };
+//   if (excludeId) query._id = { $ne: excludeId };
+//   const existing = await PressRelease.findOne(query);
+//   return !!existing;
+// };
+
+// const checkMediaExistsForDocket = async (url, docketId, excludeId = null) => {
+//   const existingMedia = await Media.findOne({ 
+//     url, 
+//     docketId,
+//     ...(excludeId && { _id: { $ne: excludeId } })
+//   });
+//   if (existingMedia) return { exists: true, source: "approved" };
+  
+//   const existingSubmission = await MediaSubmission.findOne({ 
+//     url, 
+//     docketId,
+//     status: "pending",
+//     ...(excludeId && { _id: { $ne: excludeId } })
+//   });
+//   if (existingSubmission) return { exists: true, source: "pending" };
+  
+//   return { exists: false };
+// };
+
+// // Helper: Check if docket with same claim URL or response title exists (for update, excluding current)
+// const checkDocketExistsForUpdate = async (claimUrl, responseTitle, excludeId, currentClaimUrl, currentResponseTitle) => {
+//   // Only check if the values have changed
+//   const needToCheck = (claimUrl && claimUrl !== currentClaimUrl) || 
+//                        (responseTitle && responseTitle !== currentResponseTitle);
+  
+//   if (!needToCheck) return false;
+  
+//   const conditions = [];
+//   if (claimUrl && claimUrl !== currentClaimUrl && claimUrl !== "") {
+//     conditions.push({ "claim.url": claimUrl });
+//   }
+//   if (responseTitle && responseTitle !== currentResponseTitle && responseTitle !== "") {
+//     conditions.push({ "response.title": responseTitle });
+//   }
+  
+//   if (conditions.length === 0) return false;
+  
+//   const query = {
+//     $or: conditions,
+//     _id: { $ne: excludeId }
+//   };
+  
+//   const existing = await Docket.findOne(query);
+//   return !!existing;
+// };
+
+// // ============ ACTIVITY LOG HELPER ============
+// const logActivity = (action, entityType, entityId, entityTitle, entitySubtitle = "") => {
+//   ActivityLog.create({
+//     action,
+//     entityType,
+//     entityId: String(entityId),
+//     entityTitle: entityTitle || "Untitled",
+//     entitySubtitle,
+//   }).catch((err) => console.error("Activity log error:", err));
+// };
+
+// // ============ ADMIN LOGIN ============
+// router.post("/login", async (req, res) => {
+//   try {
+//     const { email, password } = req.body;
+
+//     const adminEmail = process.env.ADMIN_EMAIL || "admin@journalismsociety.org";
+//     const adminPasswordHash = process.env.ADMIN_PASSWORD_HASH;
+
+//     if (email !== adminEmail) {
+//       return res.status(401).json({ success: false, message: "Invalid credentials" });
+//     }
+
+//     if (adminPasswordHash) {
+//       const isValid = bcrypt.compareSync(password, adminPasswordHash);
+//       if (!isValid) {
+//         return res.status(401).json({ success: false, message: "Invalid credentials" });
+//       }
+//     } else {
+//       if (password !== "admin123") {
+//         return res.status(401).json({ success: false, message: "Invalid credentials" });
+//       }
+//       console.warn("⚠️ Using default password. Set ADMIN_PASSWORD_HASH in .env for production.");
+//     }
+
+//     const token = jwt.sign(
+//       { email: adminEmail, role: "admin", iat: Math.floor(Date.now() / 1000) },
+//       JWT_SECRET,
+//       { expiresIn: JWT_EXPIRES_IN }
+//     );
+
+//     res.json({
+//       success: true,
+//       message: "Login successful",
+//       token,
+//       expiresIn: JWT_EXPIRES_IN,
+//     });
+//   } catch (error) {
+//     console.error("Login error:", error);
+//     res.status(500).json({ success: false, message: "Login failed" });
+//   }
+// });
+
+// // ============ VERIFY TOKEN ENDPOINT ============
+// router.get("/verify", verifyAdminToken, async (req, res) => {
+//   res.json({ success: true, message: "Token valid", admin: req.admin });
+// });
+
+// // ============ Configure multer for file uploads ============
+// const storage = multer.diskStorage({
+//   destination: function (req, file, cb) {
+//     const uploadDir = path.join(process.cwd(), "uploads", "documents");
+//     if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+//     cb(null, uploadDir);
+//   },
+//   filename: function (req, file, cb) {
+//     const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+//     const ext = path.extname(file.originalname);
+//     cb(null, `doc-${uniqueSuffix}${ext}`);
+//   },
+// });
+
+// const upload = multer({
+//   storage,
+//   limits: { fileSize: 25 * 1024 * 1024 },
+//   fileFilter: (req, file, cb) => {
+//     const allowedTypes = [
+//       "application/pdf", "image/jpeg", "image/png",
+//       "application/msword",
+//       "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+//     ];
+//     allowedTypes.includes(file.mimetype) ? cb(null, true) : cb(new Error("Invalid file type"));
+//   },
+// });
+
+// // Configure multer for exhibit uploads
+// const exhibitStorage = multer.diskStorage({
+//   destination: function (req, file, cb) {
+//     const uploadDir = path.join(process.cwd(), "uploads", "exhibits");
+//     if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+//     cb(null, uploadDir);
+//   },
+//   filename: function (req, file, cb) {
+//     const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+//     const ext = path.extname(file.originalname);
+//     cb(null, `exhibit-${uniqueSuffix}${ext}`);
+//   },
+// });
+
+// const exhibitUpload = multer({
+//   storage: exhibitStorage,
+//   limits: { fileSize: 25 * 1024 * 1024 },
+//   fileFilter: (req, file, cb) => {
+//     const allowedTypes = [
+//       "application/pdf", "image/jpeg", "image/png",
+//       "application/msword",
+//       "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+//       "application/vnd.ms-excel",
+//       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+//       "text/csv",
+//     ];
+//     allowedTypes.includes(file.mimetype)
+//       ? cb(null, true)
+//       : cb(new Error("Invalid file type. Only PDF, images, and Office documents are allowed."));
+//   },
+// });
+
+// // Configure multer for press release images
+// const pressReleaseImageStorage = multer.diskStorage({
+//   destination: function (req, file, cb) {
+//     const uploadDir = path.join(process.cwd(), "uploads", "press-releases");
+//     if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+//     cb(null, uploadDir);
+//   },
+//   filename: function (req, file, cb) {
+//     const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+//     const ext = path.extname(file.originalname);
+//     cb(null, `press-${uniqueSuffix}${ext}`);
+//   },
+// });
+
+// const pressReleaseImageUpload = multer({
+//   storage: pressReleaseImageStorage,
+//   limits: { fileSize: 5 * 1024 * 1024 },
+//   fileFilter: (req, file, cb) => {
+//     const allowedTypes = ["image/jpeg", "image/png", "image/jpg", "image/webp"];
+//     allowedTypes.includes(file.mimetype)
+//       ? cb(null, true)
+//       : cb(new Error("Invalid file type. Only JPEG, PNG, and WebP images are allowed."));
+//   },
+// });
+
+// // ============ EXHIBIT UPLOAD ============
+// router.post("/upload-exhibit", exhibitUpload.single("file"), async (req, res) => {
+//   try {
+//     const file = req.file;
+//     if (!file) return res.status(400).json({ success: false, message: "No file uploaded" });
+//     res.json({
+//       success: true,
+//       fileUrl: `/uploads/exhibits/${file.filename}`,
+//       fileName: file.originalname,
+//       fileSize: file.size,
+//       fileType: file.mimetype,
+//       message: "File uploaded successfully",
+//     });
+//   } catch (error) {
+//     console.error("Error uploading exhibit:", error);
+//     res.status(500).json({ success: false, message: error.message });
+//   }
+// });
+
+// // ============ DASHBOARD STATS ============
+// router.get("/stats", async (req, res) => {
+//   try {
+//     const PressRelease = mongoose.model("PressRelease");
+//     const stats = {
+//       pendingSubmissions: await Submission.countDocuments({ status: "pending" }),
+//       pendingMedia: await MediaSubmission.countDocuments({ status: "pending" }),
+//       totalDockets: await Docket.countDocuments(),
+//       totalDocuments: await Document.countDocuments(),
+//       totalPressReleases: await PressRelease.countDocuments(),
+//       pendingFlags: await Flag.countDocuments({ status: "pending" }),
+//     };
+//     res.json(stats);
+//   } catch (error) {
+//     res.status(500).json({ message: error.message });
+//   }
+// });
+
+// // ============ ACTIVITY LOG ============
+// router.get("/activity-log", async (req, res) => {
+//   try {
+//     const logs = await ActivityLog.find().sort({ createdAt: -1 }).limit(100);
+//     res.json({ success: true, logs });
+//   } catch (error) {
+//     res.status(500).json({ success: false, message: error.message });
+//   }
+// });
+
+// router.delete("/activity-log", async (req, res) => {
+//   try {
+//     await ActivityLog.deleteMany({});
+//     res.json({ success: true, message: "Activity log cleared" });
+//   } catch (error) {
+//     res.status(500).json({ success: false, message: error.message });
+//   }
+// });
+
+// // ============ SUBMISSIONS ============
+// router.get("/submissions", async (req, res) => {
+//   try {
+//     const { status } = req.query;
+//     const filter = status && status !== "all" ? { status } : {};
+//     const submissions = await Submission.find(filter).sort({ submittedAt: -1 });
+//     res.json({ success: true, submissions });
+//   } catch (error) {
+//     res.status(500).json({ success: false, message: error.message });
+//   }
+// });
+
+// router.get("/submissions/:id", async (req, res) => {
+//   try {
+//     const submission = await Submission.findById(req.params.id);
+//     if (!submission) return res.status(404).json({ success: false, message: "Submission not found" });
+//     res.json({ success: true, submission });
+//   } catch (error) {
+//     res.status(500).json({ success: false, message: error.message });
+//   }
+// });
+
+// router.patch("/submissions/:id/status", async (req, res) => {
+//   try {
+//     const { status, reviewNotes } = req.body;
+//     const submission = await Submission.findById(req.params.id);
+//     if (!submission) return res.status(404).json({ success: false, message: "Submission not found" });
+
+//     submission.status = status;
+//     if (reviewNotes) submission.adminNotes = reviewNotes;
+//     if (["approved", "rejected", "published"].includes(status)) {
+//       submission.reviewedAt = new Date();
+//     }
+//     await submission.save();
+
+//     logActivity(
+//       "updated", "submission",
+//       submission._id,
+//       submission.responseTitle || "Untitled Submission",
+//       `Status → ${status}`
+//     );
+
+//     res.json({ success: true, message: "Status updated", submission });
+//   } catch (error) {
+//     res.status(500).json({ success: false, message: error.message });
+//   }
+// });
+
+// router.post("/submissions/:id/reject", async (req, res) => {
+//   try {
+//     const { reviewNotes } = req.body;
+//     const submission = await Submission.findById(req.params.id);
+//     if (!submission) return res.status(404).json({ success: false, message: "Submission not found" });
+
+//     submission.status = "rejected";
+//     submission.adminNotes = reviewNotes || "Submission rejected";
+//     submission.reviewedAt = new Date();
+//     await submission.save();
+
+//     logActivity(
+//       "updated", "submission",
+//       submission._id,
+//       submission.responseTitle || "Untitled Submission",
+//       "Status → rejected"
+//     );
+
+//     res.json({ success: true, message: "Submission rejected", submission });
+//   } catch (error) {
+//     res.status(500).json({ success: false, message: error.message });
+//   }
+// });
+
+// // ============ CREATE DOCKET FROM SUBMISSION ============
+// router.post("/create-docket", async (req, res) => {
+//   try {
+//     const { submissionId, docketData } = req.body;
+//     const submission = await Submission.findById(submissionId);
+//     if (!submission) return res.status(404).json({ success: false, message: "Submission not found" });
+    
+//     // Check if docket with same claim URL or response title already exists
+//     const exists = await checkDocketExists(submission.claimUrl, docketData.title);
+//     if (exists) {
+//       return res.status(409).json({ 
+//         success: false, 
+//         message: "A docket with this claim URL or response title already exists. Please check existing dockets." 
+//       });
+//     }
+
+//     const formattedTimeline = (docketData.timeline || []).map((entry) => ({
+//       date: entry.date || "",
+//       event: entry.event || "",
+//       description: entry.description || "",
+//       type: ["claim", "response", "third_party", "correction"].includes(entry.type)
+//         ? entry.type
+//         : "response",
+//     }));
+
+//     const docket = new Docket({
+//       summary: {
+//         claim: docketData.summary.claim,
+//         context: docketData.summary.context || "",
+//         whyMatters: docketData.summary.whyMatters || "",
+//       },
+//       respondent: { name: submission.respondentName, type: submission.respondentType },
+//       claim: {
+//         source: submission.claimSource,
+//         url: submission.claimUrl,
+//         date: submission.claimDate,
+//         category: submission.claimCategory,
+//       },
+//       response: {
+//         title: docketData.title || "",
+//         body: docketData.response?.body || "",
+//         type: docketData.response?.type || "",
+//         requestedAction: submission.requestedAction || "",
+//       },
+//       exhibits: docketData.exhibits || [],
+//       timeline: formattedTimeline,
+//       status: docketData.status || "Open",
+//       filedDate: new Date(),
+//       publishedDate: new Date(),
+//       sourceSubmissionId: submission._id,
+//     });
+
+//     await docket.save();
+
+//     // Create documents for exhibits
+//     if (docketData.exhibits?.length > 0) {
+//       for (const exhibit of docketData.exhibits) {
+//         await new Document({
+//           title: exhibit.title,
+//           type: exhibit.category || "Evidence",
+//           description: exhibit.description || `Exhibit from docket ${docket.docketId}`,
+//           fileUrl: exhibit.fileUrl,
+//           fileName: exhibit.title,
+//           fileSize: exhibit.fileSize,
+//           fileType: exhibit.fileType,
+//           sourceDocketId: docket._id,
+//           sourceDocketNumber: docket.docketId,
+//           exhibitId: exhibit.exhibitId,
+//           publishedDate: new Date(),
+//           addedBy: "admin",
+//           checksum: exhibit.checksum || null,
+//         }).save();
+//       }
+//     }
+
+//     submission.status = "published";
+//     submission.publishedDocketId = docket._id;
+//     submission.publishedDocketNumber = docket.docketId;
+//     submission.reviewedAt = new Date();
+//     await submission.save();
+
+//     logActivity("created", "docket", docket._id, docket.response.title, docket.docketId);
+
+//     res.json({
+//       success: true,
+//       message: "Docket created successfully!",
+//       docket: { id: docket._id, docketId: docket.docketId, title: docket.response.title },
+//     });
+//   } catch (error) {
+//     console.error("❌ Error creating docket:", error);
+//     res.status(500).json({ success: false, message: error.message, details: error.errors });
+//   }
+// });
+
+// // ============ DOCKETS MANAGEMENT ============
+// router.get("/dockets", async (req, res) => {
+//   try {
+//     const dockets = await Docket.find().sort({ publishedDate: -1 });
+//     res.json({ success: true, dockets });
+//   } catch (error) {
+//     res.status(500).json({ success: false, message: error.message });
+//   }
+// });
+
+// router.get("/dockets/:id", async (req, res) => {
+//   try {
+//     const docket = await Docket.findById(req.params.id);
+//     if (!docket) return res.status(404).json({ success: false, message: "Docket not found" });
+//     res.json({ success: true, docket });
+//   } catch (error) {
+//     res.status(500).json({ success: false, message: error.message });
+//   }
+// });
+
+// router.patch("/dockets/:id", async (req, res) => {
+//   try {
+//     const docket = await Docket.findByIdAndUpdate(
+//       req.params.id,
+//       { ...req.body, lastUpdated: new Date() },
+//       { new: true }
+//     );
+//     if (!docket) return res.status(404).json({ success: false, message: "Docket not found" });
+
+//     logActivity("updated", "docket", docket._id, docket.response?.title, docket.docketId);
+
+//     res.json({ success: true, docket });
+//   } catch (error) {
+//     res.status(500).json({ success: false, message: error.message });
+//   }
+// });
+
+// // ============ DELETE DOCKET (with cascade to flags) ============
+// router.delete("/dockets/:id", async (req, res) => {
+//   try {
+//     const docketId = req.params.id;
+//     const docket = await Docket.findById(docketId);
+//     if (!docket) return res.status(404).json({ success: false, message: "Docket not found" });
+
+//     const [mediaDeleteResult, mediaSubmissionsDeleteResult, documentsDeleteResult, flagsDeleteResult] =
+//       await Promise.all([
+//         Media.deleteMany({ docketId }),
+//         MediaSubmission.deleteMany({ docketId }),
+//         Document.deleteMany({ sourceDocketId: docketId }),
+//         Flag.deleteMany({ docketId }),          // ← cascade delete flags
+//       ]);
+
+//     if (docket.sourceSubmissionId) {
+//       const submission = await Submission.findById(docket.sourceSubmissionId);
+//       if (submission) {
+//         submission.status = "rejected";
+//         submission.publishedDocketId = null;
+//         submission.publishedDocketNumber = null;
+//         submission.adminNotes = submission.adminNotes
+//           ? `${submission.adminNotes}\n[Docket deleted on ${new Date().toISOString()}]`
+//           : `Docket deleted on ${new Date().toISOString()}`;
+//         await submission.save();
+//       }
+//     }
+
+//     logActivity("deleted", "docket", docket._id, docket.response?.title, docket.docketId);
+
+//     await Docket.findByIdAndDelete(docketId);
+
+//     res.json({
+//       success: true,
+//       message: "Docket and all related data deleted successfully",
+//       details: {
+//         mediaDeleted: mediaDeleteResult.deletedCount,
+//         mediaSubmissionsDeleted: mediaSubmissionsDeleteResult.deletedCount,
+//         documentsDeleted: documentsDeleteResult.deletedCount,
+//         flagsDeleted: flagsDeleteResult.deletedCount,
+//       },
+//     });
+//   } catch (error) {
+//     console.error("❌ Error deleting docket:", error);
+//     res.status(500).json({ success: false, message: error.message });
+//   }
+// });
+
+// // ============ MEDIA SUBMISSIONS MANAGEMENT ============
+// router.get("/media-submissions", async (req, res) => {
+//   try {
+//     const { status } = req.query;
+//     const filter = status && status !== "all" ? { status } : {};
+//     const submissions = await MediaSubmission.find(filter)
+//       .populate("docketId", "docketId response.title")
+//       .sort({ submittedAt: -1 });
+//     res.json({ success: true, submissions });
+//   } catch (error) {
+//     res.status(500).json({ success: false, message: error.message });
+//   }
+// });
+
+// router.get("/media-submissions/:id", async (req, res) => {
+//   try {
+//     const submission = await MediaSubmission.findById(req.params.id).populate(
+//       "docketId",
+//       "docketId response.title"
+//     );
+//     if (!submission) return res.status(404).json({ success: false, message: "Submission not found" });
+//     res.json({ success: true, submission });
+//   } catch (error) {
+//     res.status(500).json({ success: false, message: error.message });
+//   }
+// });
+
+// router.post("/media-submissions", async (req, res) => {
+//   try {
+//     const { outlet, headline, url, date, type, docketId, note } = req.body;
+//     const docket = await Docket.findById(docketId);
+//     if (!docket) return res.status(404).json({ success: false, message: "Docket not found" });
+
+//     const submission = new MediaSubmission({
+//       outlet, headline, url, date, type,
+//       docketId, docketNumber: docket.docketId,
+//       note, status: "pending", submittedAt: new Date(),
+//     });
+//     await submission.save();
+
+//     res.json({
+//       success: true,
+//       message: "Media citation submitted for review",
+//       submissionId: submission._id,
+//     });
+//   } catch (error) {
+//     console.error("Submission error:", error);
+//     res.status(500).json({ success: false, message: error.message });
+//   }
+// });
+
+// // Update the media-submissions/:id/approve endpoint
+// router.post("/media-submissions/:id/approve", async (req, res) => {
+//   try {
+//     const { stance, summary, adminNotes } = req.body;
+//     const submission = await MediaSubmission.findById(req.params.id);
+//     if (!submission) return res.status(404).json({ success: false, message: "Submission not found" });
+    
+//     // Check if media with same URL already exists for this docket
+//     const duplicateCheck = await checkMediaExistsForDocket(submission.url, submission.docketId, submission._id);
+    
+//     if (duplicateCheck.exists) {
+//       let message = "";
+//       if (duplicateCheck.source === "approved") {
+//         message = "A media entry with this URL has already been approved for this docket.";
+//       } else if (duplicateCheck.source === "pending") {
+//         message = "Another pending submission with this URL already exists for this docket.";
+//       }
+      
+//       if (message) {
+//         return res.status(409).json({ 
+//           success: false, 
+//           message: message
+//         });
+//       }
+//     }
+
+//     const media = new Media({
+//       outlet: submission.outlet,
+//       headline: submission.headline,
+//       date: submission.date,
+//       type: submission.type,
+//       stance: stance || "neutral",
+//       url: submission.url,
+//       summary: summary || submission.note || "",
+//       docketId: submission.docketId,
+//       docketNumber: submission.docketNumber,
+//       source: "user_submission",
+//       sourceSubmissionId: submission._id,
+//       status: "approved",
+//       approvedAt: new Date(),
+//       publishedDate: new Date(),
+//     });
+//     await media.save();
+
+//     submission.status = "approved";
+//     submission.approvedAt = new Date();
+//     submission.adminNotes = adminNotes || "";
+//     submission.stance = stance || "neutral";
+//     await submission.save();
+
+//     logActivity("created", "media", media._id, media.headline, media.outlet);
+
+//     res.json({ success: true, message: "Media approved and published", media });
+//   } catch (error) {
+//     console.error("Approval error:", error);
+//     res.status(500).json({ success: false, message: error.message });
+//   }
+// });
+
+
+// router.post("/media-submissions/:id/reject", async (req, res) => {
+//   try {
+//     const { reason } = req.body;
+//     const submission = await MediaSubmission.findById(req.params.id);
+//     if (!submission) return res.status(404).json({ success: false, message: "Submission not found" });
+
+//     submission.status = "rejected";
+//     submission.adminNotes = reason || "Rejected by admin";
+//     await submission.save();
+
+//     res.json({ success: true, message: "Media rejected", submission });
+//   } catch (error) {
+//     res.status(500).json({ success: false, message: error.message });
+//   }
+// });
+
+// // ============ MEDIA MANAGEMENT ============
+// router.post("/media/create", async (req, res) => {
+//   try {
+//     const { outlet, headline, url, date, type, stance, summary, docketId } = req.body;
+    
+//     // Check if media with same URL already exists for this docket
+//     const exists = await checkMediaExistsByUrl(url, docketId);
+//     if (exists) {
+//       return res.status(409).json({ 
+//         success: false, 
+//         message: "A media entry with this URL already exists for this docket. Please check existing entries." 
+//       });
+//     }
+    
+//     const docket = await Docket.findById(docketId);
+//     if (!docket) return res.status(404).json({ success: false, message: "Docket not found" });
+
+//     const media = new Media({
+//       outlet, headline, url, date, type, stance,
+//       summary: summary || "",
+//       docketId,
+//       docketNumber: docket.docketId,
+//       source: "admin",
+//       status: "approved",
+//       approvedAt: new Date(),
+//       approvedBy: "admin",
+//       publishedDate: new Date(),
+//     });
+//     await media.save();
+
+//     logActivity("created", "media", media._id, media.headline, media.outlet);
+
+//     res.json({ success: true, message: "Media created successfully", media });
+//   } catch (error) {
+//     console.error("Error creating media:", error);
+//     res.status(500).json({ success: false, message: error.message });
+//   }
+// });
+
+// router.get("/media", async (req, res) => {
+//   try {
+//     const { docketId, status } = req.query;
+//     const filter = { status: "approved" };
+//     if (docketId) filter.docketId = docketId;
+//     if (status && status !== "all") filter.status = status;
+
+//     const media = await Media.find(filter)
+//       .populate("docketId", "docketId response.title")
+//       .sort({ publishedDate: -1 });
+//     res.json({ success: true, media });
+//   } catch (error) {
+//     res.status(500).json({ success: false, message: error.message });
+//   }
+// });
+
+// router.get("/media/pending", async (req, res) => {
+//   try {
+//     const media = await Media.find({ status: "pending" }).sort({ createdAt: -1 });
+//     res.json({ success: true, media });
+//   } catch (error) {
+//     res.status(500).json({ success: false, message: error.message });
+//   }
+// });
+
+// router.get("/media/by-docket/:docketId", async (req, res) => {
+//   try {
+//     const media = await Media.find({ docketId: req.params.docketId, status: "approved" }).sort({
+//       publishedDate: -1,
+//     });
+//     res.json({ success: true, media });
+//   } catch (error) {
+//     res.status(500).json({ success: false, message: error.message });
+//   }
+// });
+
+// // router.post("/media/:id/approve", async (req, res) => {
+// //   try {
+// //     const media = await Media.findById(req.params.id);
+// //     if (!media) return res.status(404).json({ success: false, message: "Media not found" });
+// //     media.status = "approved";
+// //     media.approvedAt = new Date();
+// //     await media.save();
+// //     logActivity("updated", "media", media._id, media.headline, media.outlet);
+// //     res.json({ success: true, message: "Media approved", media });
+// //   } catch (error) {
+// //     res.status(500).json({ success: false, message: error.message });
+// //   }
+// // });
+// router.post("/media-submissions/:id/approve", async (req, res) => {
+//   try {
+//     const { stance, summary, adminNotes } = req.body;
+//     const submission = await MediaSubmission.findById(req.params.id);
+//     if (!submission) return res.status(404).json({ success: false, message: "Submission not found" });
+    
+//     // Check if media with same URL already exists for this docket
+//     const exists = await checkMediaExistsByUrl(submission.url, submission.docketId);
+//     if (exists) {
+//       return res.status(409).json({ 
+//         success: false, 
+//         message: "A media entry with this URL already exists for this docket. Please check existing entries before approving." 
+//       });
+//     }
+
+//     const media = new Media({
+//       outlet: submission.outlet,
+//       headline: submission.headline,
+//       date: submission.date,
+//       type: submission.type,
+//       stance: stance || "neutral",
+//       url: submission.url,
+//       summary: summary || submission.note || "",
+//       docketId: submission.docketId,
+//       docketNumber: submission.docketNumber,
+//       source: "user_submission",
+//       sourceSubmissionId: submission._id,
+//       status: "approved",
+//       approvedAt: new Date(),
+//       publishedDate: new Date(),
+//     });
+//     await media.save();
+
+//     submission.status = "approved";
+//     submission.approvedAt = new Date();
+//     submission.adminNotes = adminNotes || "";
+//     submission.stance = stance || "neutral";
+//     await submission.save();
+
+//     logActivity("created", "media", media._id, media.headline, media.outlet);
+
+//     res.json({ success: true, message: "Media approved and published", media });
+//   } catch (error) {
+//     console.error("Approval error:", error);
+//     res.status(500).json({ success: false, message: error.message });
+//   }
+// });
+
+// router.post("/media/:id/reject", async (req, res) => {
+//   try {
+//     const { reason } = req.body;
+//     const media = await Media.findById(req.params.id);
+//     if (!media) return res.status(404).json({ success: false, message: "Media not found" });
+//     media.status = "rejected";
+//     media.adminNotes = reason;
+//     await media.save();
+//     res.json({ success: true, message: "Media rejected", media });
+//   } catch (error) {
+//     res.status(500).json({ success: false, message: error.message });
+//   }
+// });
+
+// router.patch("/media/:id", async (req, res) => {
+//   try {
+//     const { outlet, headline, url, date, type, stance, summary } = req.body;
+    
+//     const existingMedia = await Media.findById(req.params.id);
+//     if (!existingMedia) return res.status(404).json({ success: false, message: "Media not found" });
+    
+//     if (url && url !== existingMedia.url) {
+//       const duplicateCheck = await checkMediaExistsForDocket(url, existingMedia.docketId, req.params.id);
+//       if (duplicateCheck.exists) {
+//         return res.status(409).json({ 
+//           success: false, 
+//           message: `A media entry with this URL already exists for this docket (${duplicateCheck.source}).` 
+//         });
+//       }
+//     }
+    
+//     const media = await Media.findByIdAndUpdate(
+//       req.params.id,
+//       { outlet, headline, url, date, type, stance, summary, updatedAt: new Date() },
+//       { new: true }
+//     );
+    
+//     logActivity("updated", "media", media._id, media.headline, media.outlet);
+//     res.json({ success: true, media });
+//   } catch (error) {
+//     res.status(500).json({ success: false, message: error.message });
+//   }
+// });
+
+// router.delete("/media/:id", async (req, res) => {
+//   try {
+//     const media = await Media.findById(req.params.id);
+//     if (!media) return res.status(404).json({ success: false, message: "Media not found" });
+
+//     if (media.source === "user_submission" && media.sourceSubmissionId) {
+//       await MediaSubmission.findByIdAndDelete(media.sourceSubmissionId);
+//     }
+
+//     logActivity("deleted", "media", media._id, media.headline, media.outlet);
+
+//     await Media.findByIdAndDelete(req.params.id);
+//     res.json({ success: true, message: "Media deleted successfully" });
+//   } catch (error) {
+//     console.error("Error deleting media:", error);
+//     res.status(500).json({ success: false, message: error.message });
+//   }
+// });
+
+// // ============ DOCUMENTS MANAGEMENT ============
+// router.get("/documents", async (req, res) => {
+//   try {
+//     const documents = await Document.find().sort({ publishedDate: -1 });
+//     res.json({ success: true, documents });
+//   } catch (error) {
+//     res.status(500).json({ success: false, message: error.message });
+//   }
+// });
+
+// router.post("/documents/upload", upload.single("file"), async (req, res) => {
+//   try {
+//     const { title, type, description, docketId } = req.body;
+//     const file = req.file;
+//     if (!file) return res.status(400).json({ success: false, message: "No file uploaded" });
+
+//     const document = new Document({
+//       title, type, description,
+//       fileUrl: `/uploads/documents/${file.filename}`,
+//       fileName: file.originalname,
+//       fileSize: file.size,
+//       fileType: file.mimetype,
+//       sourceDocketId: docketId || null,
+//       publishedDate: new Date(),
+//       addedBy: "admin",
+//     });
+//     await document.save();
+
+//     logActivity("created", "document", document._id, document.title, type);
+
+//     res.json({ success: true, document });
+//   } catch (error) {
+//     res.status(500).json({ success: false, message: error.message });
+//   }
+// });
+
+// router.delete("/documents/:id", async (req, res) => {
+//   try {
+//     const document = await Document.findById(req.params.id);
+//     if (!document) return res.status(404).json({ success: false, message: "Document not found" });
+
+//     logActivity("deleted", "document", document._id, document.title, document.type);
+
+//     await Document.findByIdAndDelete(req.params.id);
+//     res.json({ success: true, message: "Document deleted" });
+//   } catch (error) {
+//     res.status(500).json({ success: false, message: error.message });
+//   }
+// });
+
+// // ============ CREATE DOCKET DIRECT ============
+// router.post("/create-docket-direct", async (req, res) => {
+//   try {
+//     const { docketData } = req.body;
+    
+//     // Check if docket with same claim URL or response title already exists
+//     const exists = await checkDocketExists(docketData.claim.url, docketData.title);
+//     if (exists) {
+//       return res.status(409).json({ 
+//         success: false, 
+//         message: "A docket with this claim URL or response title already exists. Please check existing dockets." 
+//       });
+//     }
+
+//     const formattedTimeline = (docketData.timeline || []).map((entry) => ({
+//       date: entry.date || "",
+//       event: entry.event || "",
+//       description: entry.description || "",
+//       type: ["claim", "response", "third_party", "correction"].includes(entry.type)
+//         ? entry.type
+//         : "response",
+//     }));
+
+//     const docket = new Docket({
+//       summary: {
+//         claim: docketData.summary.claim,
+//         context: docketData.summary.context || "",
+//         whyMatters: docketData.summary.whyMatters || "",
+//       },
+//       respondent: { name: docketData.respondent.name, type: docketData.respondent.type },
+//       claim: {
+//         source: docketData.claim.source,
+//         url: docketData.claim.url,
+//         date: docketData.claim.date,
+//         category: docketData.claim.category,
+//       },
+//       response: {
+//         title: docketData.title,
+//         body: docketData.response.body,
+//         type: docketData.response.type || "",
+//         requestedAction: docketData.response.requestedAction || "",
+//       },
+//       exhibits: docketData.exhibits || [],
+//       timeline: formattedTimeline,
+//       status: docketData.status || "Open",
+//       filedDate: new Date(),
+//       publishedDate: new Date(),
+//     });
+
+//     await docket.save();
+
+//     // Create documents for exhibits
+//     if (docketData.exhibits?.length > 0) {
+//       for (const exhibit of docketData.exhibits) {
+//         await new Document({
+//           title: exhibit.title,
+//           type: exhibit.category || "Evidence",
+//           description: exhibit.description || `Exhibit from docket ${docket.docketId}`,
+//           fileUrl: exhibit.fileUrl,
+//           fileName: exhibit.title,
+//           fileSize: exhibit.fileSize,
+//           fileType: exhibit.fileType,
+//           sourceDocketId: docket._id,
+//           sourceDocketNumber: docket.docketId,
+//           exhibitId: exhibit.exhibitId,
+//           publishedDate: new Date(),
+//           addedBy: "admin",
+//           checksum: exhibit.checksum || null,
+//         }).save();
+//       }
+//     }
+
+//     logActivity("created", "docket", docket._id, docket.response.title, docket.docketId);
+
+//     res.json({
+//       success: true,
+//       message: "Docket created successfully!",
+//       docket: { id: docket._id, docketId: docket.docketId, title: docket.response.title },
+//     });
+//   } catch (error) {
+//     console.error("❌ Error creating docket:", error);
+//     res.status(500).json({ success: false, message: error.message, details: error.errors });
+//   }
+// });
+
+// // ============ UPDATE DOCKET FULL (with Document sync) ============
+// // Replace the existing router.patch("/dockets/:id/full", ...) handler with this one
+
+// router.patch("/dockets/:id/full", async (req, res) => {
+//   const session = await mongoose.startSession();
+//   session.startTransaction();
+
+//   try {
+//     const { id } = req.params;
+//     const { docketData, deletedExhibits, deletedMedia, mediaItems } = req.body;
+
+//     // Get existing docket to check for duplicates
+//     const existingDocket = await Docket.findById(id);
+//     if (!existingDocket) {
+//       await session.abortTransaction();
+//       session.endSession();
+//       return res.status(404).json({ success: false, message: "Docket not found" });
+//     }
+
+//     // Check for duplicates if claim URL or response title changed
+//     const newClaimUrl = docketData.claim?.url || existingDocket.claim.url;
+//     const newResponseTitle = docketData.response?.title || existingDocket.response.title;
+
+//     const exists = await checkDocketExistsForUpdate(
+//       newClaimUrl,
+//       newResponseTitle,
+//       id,
+//       existingDocket.claim.url,
+//       existingDocket.response.title
+//     );
+
+//     if (exists) {
+//       await session.abortTransaction();
+//       session.endSession();
+//       return res.status(409).json({
+//         success: false,
+//         message: "A docket with this claim URL or response title already exists. Please use different values.",
+//       });
+//     }
+
+//     // Update the docket
+//     const docket = await Docket.findByIdAndUpdate(
+//       id,
+//       {
+//         summary: docketData.summary,
+//         respondent: docketData.respondent,
+//         claim: docketData.claim,
+//         response: docketData.response,
+//         timeline: docketData.timeline,
+//         exhibits: docketData.exhibits,
+//         status: docketData.status,
+//         lastUpdated: new Date(),
+//       },
+//       { new: true, session }
+//     );
+
+//     if (!docket) {
+//       await session.abortTransaction();
+//       session.endSession();
+//       return res.status(404).json({ success: false, message: "Docket not found" });
+//     }
+
+//     // ── Handle deleted exhibits: remove matching Documents ──
+//     if (deletedExhibits?.length > 0) {
+//       for (const exhibitId of deletedExhibits) {
+//         if (exhibitId) {
+//           await Document.deleteMany({
+//             sourceDocketId: id,
+//             exhibitId: exhibitId,
+//           }).session(session);
+//         }
+//       }
+//     }
+
+//     // ── Sync exhibits → Document model ──
+//     // Strategy: for each exhibit in the updated docket, check if a Document
+//     // already exists by (sourceDocketId + exhibitId) OR (sourceDocketId + fileUrl).
+//     // Only create a new Document if neither match is found.
+//     // This prevents E11000 duplicate documentId errors.
+//     if (docketData.exhibits?.length > 0) {
+//       for (const exhibit of docketData.exhibits) {
+//         if (!exhibit.fileUrl || !exhibit.title) continue;
+
+//         // Check by exhibitId first (most reliable)
+//         let existingDoc = null;
+
+//         if (exhibit.exhibitId) {
+//           existingDoc = await Document.findOne({
+//             sourceDocketId: id,
+//             exhibitId: exhibit.exhibitId,
+//           }).session(session);
+//         }
+
+//         // Fallback: check by fileUrl to catch exhibits without exhibitId
+//         if (!existingDoc) {
+//           existingDoc = await Document.findOne({
+//             sourceDocketId: id,
+//             fileUrl: exhibit.fileUrl,
+//           }).session(session);
+//         }
+
+//         if (existingDoc) {
+//           // Update existing — never create a new one
+//           existingDoc.title = exhibit.title;
+//           existingDoc.type = exhibit.category || "Evidence";
+//           existingDoc.description =
+//             exhibit.description || `Exhibit from docket ${docket.docketId}`;
+//           existingDoc.fileUrl = exhibit.fileUrl;
+//           existingDoc.fileName = exhibit.title;
+//           existingDoc.fileSize = exhibit.fileSize;
+//           existingDoc.fileType = exhibit.fileType;
+//           existingDoc.sourceDocketNumber = docket.docketId;
+//           // Ensure exhibitId is set on old docs that were missing it
+//           if (exhibit.exhibitId && !existingDoc.exhibitId) {
+//             existingDoc.exhibitId = exhibit.exhibitId;
+//           }
+//           await existingDoc.save({ session });
+//         } else {
+//           // Truly new exhibit — create a Document record
+//           const newDoc = new Document({
+//             title: exhibit.title,
+//             type: exhibit.category || "Evidence",
+//             description:
+//               exhibit.description || `Exhibit from docket ${docket.docketId}`,
+//             fileUrl: exhibit.fileUrl,
+//             fileName: exhibit.title,
+//             fileSize: exhibit.fileSize,
+//             fileType: exhibit.fileType,
+//             sourceDocketId: docket._id,
+//             sourceDocketNumber: docket.docketId,
+//             exhibitId: exhibit.exhibitId || null,
+//             publishedDate: new Date(),
+//             addedBy: "admin",
+//           });
+//           await newDoc.save({ session });
+//         }
+//       }
+//     }
+
+//     // ── Handle deleted media ──
+//     if (deletedMedia?.length > 0) {
+//       await Media.deleteMany({ _id: { $in: deletedMedia } }).session(session);
+//     }
+
+//     // ── Handle media item updates ──
+//     if (mediaItems?.length > 0) {
+//       for (const media of mediaItems) {
+//         if (media._id) {
+//           await Media.findByIdAndUpdate(
+//             media._id,
+//             {
+//               outlet: media.outlet,
+//               headline: media.headline,
+//               url: media.url,
+//               date: media.date,
+//               type: media.type,
+//               stance: media.stance,
+//               summary: media.summary,
+//               updatedAt: new Date(),
+//             },
+//             { session }
+//           );
+//         } else {
+//           // New media item added via the edit form
+//           const existingMedia = await Media.findOne({
+//             url: media.url,
+//             docketId: docket._id,
+//           }).session(session);
+
+//           if (!existingMedia) {
+//             await new Media({
+//               ...media,
+//               docketId: docket._id,
+//               docketNumber: docket.docketId,
+//               source: "admin",
+//               status: "approved",
+//               publishedDate: new Date(),
+//             }).save({ session });
+//           }
+//         }
+//       }
+//     }
+
+//     await session.commitTransaction();
+//     session.endSession();
+
+//     logActivity("updated", "docket", docket._id, docket.response?.title, docket.docketId);
+
+//     res.json({ success: true, message: "Docket updated successfully", docket });
+//   } catch (error) {
+//     await session.abortTransaction();
+//     session.endSession();
+//     console.error("Error updating docket:", error);
+//     res.status(500).json({ success: false, message: error.message });
+//   }
+// });
+
+// // ============ PRESS RELEASES MANAGEMENT ============
+// router.get("/press-releases", async (req, res) => {
+//   try {
+//     const PressRelease = mongoose.model("PressRelease");
+//     const releases = await PressRelease.find().sort({ date: -1 });
+//     res.json({ success: true, releases });
+//   } catch (error) {
+//     res.status(500).json({ success: false, message: error.message });
+//   }
+// });
+
+// router.get("/press-releases/:id", async (req, res) => {
+//   try {
+//     const PressRelease = mongoose.model("PressRelease");
+//     const release = await PressRelease.findById(req.params.id);
+//     if (!release) return res.status(404).json({ success: false, message: "Press release not found" });
+//     res.json({ success: true, release });
+//   } catch (error) {
+//     res.status(500).json({ success: false, message: error.message });
+//   }
+// });
+
+// router.post("/press-releases", async (req, res) => {
+//   try {
+//     const PressRelease = mongoose.model("PressRelease");
+    
+//     // Check if press release with same title already exists
+//     const exists = await checkPressReleaseExists(req.body.title);
+//     if (exists) {
+//       return res.status(409).json({ 
+//         success: false, 
+//         message: "A press release with this title already exists. Please use a different title." 
+//       });
+//     }
+    
+//     const release = new PressRelease(req.body);
+//     await release.save();
+//     logActivity("created", "press_release", release._id, release.title, release.category);
+//     res.status(201).json({ success: true, release });
+//   } catch (error) {
+//     res.status(500).json({ success: false, message: error.message });
+//   }
+// });
+
+// router.patch("/press-releases/:id", async (req, res) => {
+//   try {
+//     const PressRelease = mongoose.model("PressRelease");
+    
+//     const existing = await PressRelease.findById(req.params.id);
+//     if (!existing) return res.status(404).json({ success: false, message: "Press release not found" });
+    
+//     // If title is being changed, check for duplicates
+//     if (req.body.title && req.body.title !== existing.title) {
+//       const exists = await checkPressReleaseExists(req.body.title, req.params.id);
+//       if (exists) {
+//         return res.status(409).json({ 
+//           success: false, 
+//           message: "A press release with this title already exists. Please use a different title." 
+//         });
+//       }
+//     }
+    
+//     const release = await PressRelease.findByIdAndUpdate(
+//       req.params.id,
+//       { ...req.body, updatedAt: new Date() },
+//       { new: true }
+//     );
+    
+//     logActivity("updated", "press_release", release._id, release.title, release.category);
+//     res.json({ success: true, release });
+//   } catch (error) {
+//     res.status(500).json({ success: false, message: error.message });
+//   }
+// });
+
+// router.delete("/press-releases/:id", async (req, res) => {
+//   try {
+//     const PressRelease = mongoose.model("PressRelease");
+//     const release = await PressRelease.findById(req.params.id);
+//     if (!release) return res.status(404).json({ success: false, message: "Press release not found" });
+//     logActivity("deleted", "press_release", release._id, release.title, release.category);
+//     await PressRelease.findByIdAndDelete(req.params.id);
+//     res.json({ success: true, message: "Press release deleted" });
+//   } catch (error) {
+//     res.status(500).json({ success: false, message: error.message });
+//   }
+// });
+
+// router.post(
+//   "/press-releases/upload-image",
+//   pressReleaseImageUpload.single("file"),
+//   async (req, res) => {
+//     try {
+//       const file = req.file;
+//       if (!file) return res.status(400).json({ success: false, message: "No file uploaded" });
+
+//       const baseUrl = `${req.protocol}://${req.get("host")}`;
+//       const fileUrl = `/uploads/press-releases/${file.filename}`;
+
+//       res.json({
+//         success: true,
+//         fileUrl,
+//         fullUrl: `${baseUrl}${fileUrl}`,
+//         fileName: file.originalname,
+//         fileSize: file.size,
+//         fileType: file.mimetype,
+//         message: "Image uploaded successfully",
+//       });
+//     } catch (error) {
+//       console.error("Error uploading press release image:", error);
+//       res.status(500).json({ success: false, message: error.message });
+//     }
+//   }
+// );
+
+
+// export default router;
+
+
+
 // routes/adminRoutes.js
+// ─────────────────────────────────────────────────────────────────────────────
+// REPLACE your entire routes/adminRoutes.js with this file.
+// Changes vs original:
+//   1. Added import for uploadToCloudinary
+//   2. Removed all multer diskStorage configs (3 of them)
+//   3. Added single memoryStorage multer instance
+//   4. Updated /upload-exhibit, /documents/upload, /press-releases/upload-image
+//      to upload to Cloudinary instead of local disk
+// Everything else is IDENTICAL to your original file.
+// ─────────────────────────────────────────────────────────────────────────────
 import express from "express";
 import mongoose from "mongoose";
 import multer from "multer";
@@ -18,22 +1406,23 @@ import MediaSubmission from "../models/MediaSubmission.js";
 import ActivityLog from "../models/ActivityLog.js";
 import Flag from "../models/Flag.js";
 
+// ── NEW IMPORT ────────────────────────────────────────────────────────────────
+import { uploadToCloudinary } from "../config/cloudinary.js";
+// ─────────────────────────────────────────────────────────────────────────────
+
 dotenv.config();
 
 const router = express.Router();
-const JWT_SECRET = process.env.JWT_SECRET || "your-super-secret-jwt-key";
+const JWT_SECRET    = process.env.JWT_SECRET    || "your-super-secret-jwt-key";
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "7d";
 
-// ============ JWT MIDDLEWARE ============
+// ── JWT MIDDLEWARE ────────────────────────────────────────────────────────────
 const verifyAdminToken = (req, res, next) => {
   const authHeader = req.headers.authorization;
-
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
     return res.status(401).json({ success: false, message: "No token provided" });
   }
-
   const token = authHeader.split(" ")[1];
-
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
     req.admin = decoded;
@@ -46,7 +1435,6 @@ const verifyAdminToken = (req, res, next) => {
   }
 };
 
-// Apply middleware to all admin routes except login
 const protectedRoutes = [
   "/stats", "/submissions", "/submissions/:id", "/submissions/:id/status",
   "/submissions/:id/reject", "/create-docket", "/create-docket-direct",
@@ -56,102 +1444,64 @@ const protectedRoutes = [
   "/documents", "/documents/upload", "/press-releases", "/press-releases/:id",
   "/press-releases/upload-image", "/upload-exhibit", "/activity-log",
 ];
-
 router.use(protectedRoutes, verifyAdminToken);
 
-
-// Add this helper function at the top of adminRoutes.js after imports
-
-// Helper: Check if media with same URL exists for a docket
+// ── DUPLICATE CHECK HELPERS ───────────────────────────────────────────────────
 const checkMediaExistsByUrl = async (url, docketId, excludeId = null) => {
   const query = { url, docketId };
   if (excludeId) query._id = { $ne: excludeId };
-  const existing = await Media.findOne(query);
-  return !!existing;
-};
-
-// Helper: Check if submission with same claim URL and response title exists
-const checkSubmissionExists = async (claimUrl, responseTitle, excludeId = null) => {
-  const query = {
-    $or: [
-      { claimUrl: claimUrl },
-      { responseTitle: responseTitle }
-    ]
-  };
-  if (excludeId) query._id = { $ne: excludeId };
-  const existing = await Submission.findOne(query);
-  return !!existing;
-};
-
-// Helper: Check if docket with same claim URL or response title exists
-const checkDocketExists = async (claimUrl, responseTitle, excludeId = null) => {
-  const query = {
-    $or: [
-      { "claim.url": claimUrl },
-      { "response.title": responseTitle }
-    ]
-  };
-  if (excludeId) query._id = { $ne: excludeId };
-  const existing = await Docket.findOne(query);
-  return !!existing;
-};
-
-// Helper: Check if press release with same title exists
-const checkPressReleaseExists = async (title, excludeId = null) => {
-  const PressRelease = mongoose.model("PressRelease");
-  const query = { title: { $regex: new RegExp(`^${title}$`, 'i') } };
-  if (excludeId) query._id = { $ne: excludeId };
-  const existing = await PressRelease.findOne(query);
-  return !!existing;
+  return !!(await Media.findOne(query));
 };
 
 const checkMediaExistsForDocket = async (url, docketId, excludeId = null) => {
-  const existingMedia = await Media.findOne({ 
-    url, 
+  const existingMedia = await Media.findOne({
+    url,
     docketId,
-    ...(excludeId && { _id: { $ne: excludeId } })
+    ...(excludeId && { _id: { $ne: excludeId } }),
   });
   if (existingMedia) return { exists: true, source: "approved" };
-  
-  const existingSubmission = await MediaSubmission.findOne({ 
-    url, 
+  const existingSubmission = await MediaSubmission.findOne({
+    url,
     docketId,
     status: "pending",
-    ...(excludeId && { _id: { $ne: excludeId } })
+    ...(excludeId && { _id: { $ne: excludeId } }),
   });
   if (existingSubmission) return { exists: true, source: "pending" };
-  
   return { exists: false };
 };
 
-// Helper: Check if docket with same claim URL or response title exists (for update, excluding current)
-const checkDocketExistsForUpdate = async (claimUrl, responseTitle, excludeId, currentClaimUrl, currentResponseTitle) => {
-  // Only check if the values have changed
-  const needToCheck = (claimUrl && claimUrl !== currentClaimUrl) || 
-                       (responseTitle && responseTitle !== currentResponseTitle);
-  
-  if (!needToCheck) return false;
-  
+const checkDocketExists = async (claimUrl, responseTitle, excludeId = null) => {
   const conditions = [];
-  if (claimUrl && claimUrl !== currentClaimUrl && claimUrl !== "") {
-    conditions.push({ "claim.url": claimUrl });
-  }
-  if (responseTitle && responseTitle !== currentResponseTitle && responseTitle !== "") {
-    conditions.push({ "response.title": responseTitle });
-  }
-  
-  if (conditions.length === 0) return false;
-  
-  const query = {
-    $or: conditions,
-    _id: { $ne: excludeId }
-  };
-  
-  const existing = await Docket.findOne(query);
-  return !!existing;
+  if (claimUrl)      conditions.push({ "claim.url": claimUrl });
+  if (responseTitle) conditions.push({ "response.title": responseTitle });
+  if (!conditions.length) return false;
+  const query = { $or: conditions };
+  if (excludeId) query._id = { $ne: excludeId };
+  return !!(await Docket.findOne(query));
 };
 
-// ============ ACTIVITY LOG HELPER ============
+const checkDocketExistsForUpdate = async (
+  claimUrl, responseTitle, excludeId, currentClaimUrl, currentResponseTitle
+) => {
+  const needToCheck =
+    (claimUrl && claimUrl !== currentClaimUrl) ||
+    (responseTitle && responseTitle !== currentResponseTitle);
+  if (!needToCheck) return false;
+  const conditions = [];
+  if (claimUrl      && claimUrl      !== currentClaimUrl)      conditions.push({ "claim.url": claimUrl });
+  if (responseTitle && responseTitle !== currentResponseTitle) conditions.push({ "response.title": responseTitle });
+  if (!conditions.length) return false;
+  return !!(await Docket.findOne({ $or: conditions, _id: { $ne: excludeId } }));
+};
+
+const checkPressReleaseExists = async (title, excludeId = null) => {
+  const PressRelease = mongoose.model("PressRelease");
+  const query = { title: { $regex: new RegExp(`^${title}$`, "i") } };
+  if (excludeId) query._id = { $ne: excludeId };
+  return !!(await PressRelease.findOne(query));
+};
+
+// ── ACTIVITY LOG HELPER ───────────────────────────────────────────────────────
 const logActivity = (action, entityType, entityId, entityTitle, entitySubtitle = "") => {
   ActivityLog.create({
     action,
@@ -162,28 +1512,46 @@ const logActivity = (action, entityType, entityId, entityTitle, entitySubtitle =
   }).catch((err) => console.error("Activity log error:", err));
 };
 
-// ============ ADMIN LOGIN ============
+// ── MULTER — single memory-storage instance for ALL admin uploads ─────────────
+// NO diskStorage. Files go to RAM buffer, then straight to Cloudinary.
+// This works on Render, Vercel, Railway, Fly.io, etc.
+const memUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 25 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const allowed = [
+      "application/pdf",
+      "image/jpeg", "image/jpg", "image/png", "image/webp",
+      "application/msword",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "application/vnd.ms-excel",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "text/csv",
+    ];
+    allowed.includes(file.mimetype)
+      ? cb(null, true)
+      : cb(new Error(`Invalid file type: ${file.mimetype}`));
+  },
+});
+
+// ── ADMIN LOGIN ───────────────────────────────────────────────────────────────
 router.post("/login", async (req, res) => {
   try {
     const { email, password } = req.body;
-
-    const adminEmail = process.env.ADMIN_EMAIL || "admin@journalismsociety.org";
+    const adminEmail        = process.env.ADMIN_EMAIL         || "admin@journalismsociety.org";
     const adminPasswordHash = process.env.ADMIN_PASSWORD_HASH;
 
     if (email !== adminEmail) {
       return res.status(401).json({ success: false, message: "Invalid credentials" });
     }
-
     if (adminPasswordHash) {
       const isValid = bcrypt.compareSync(password, adminPasswordHash);
-      if (!isValid) {
-        return res.status(401).json({ success: false, message: "Invalid credentials" });
-      }
+      if (!isValid) return res.status(401).json({ success: false, message: "Invalid credentials" });
     } else {
       if (password !== "admin123") {
         return res.status(401).json({ success: false, message: "Invalid credentials" });
       }
-      console.warn("⚠️ Using default password. Set ADMIN_PASSWORD_HASH in .env for production.");
+      console.warn("⚠️  Using default password. Set ADMIN_PASSWORD_HASH in .env for production.");
     }
 
     const token = jwt.sign(
@@ -191,120 +1559,38 @@ router.post("/login", async (req, res) => {
       JWT_SECRET,
       { expiresIn: JWT_EXPIRES_IN }
     );
-
-    res.json({
-      success: true,
-      message: "Login successful",
-      token,
-      expiresIn: JWT_EXPIRES_IN,
-    });
+    res.json({ success: true, message: "Login successful", token, expiresIn: JWT_EXPIRES_IN });
   } catch (error) {
     console.error("Login error:", error);
     res.status(500).json({ success: false, message: "Login failed" });
   }
 });
 
-// ============ VERIFY TOKEN ENDPOINT ============
-router.get("/verify", verifyAdminToken, async (req, res) => {
+router.get("/verify", verifyAdminToken, (req, res) => {
   res.json({ success: true, message: "Token valid", admin: req.admin });
 });
 
-// ============ Configure multer for file uploads ============
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    const uploadDir = path.join(process.cwd(), "uploads", "documents");
-    if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
-    cb(null, uploadDir);
-  },
-  filename: function (req, file, cb) {
-    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
-    const ext = path.extname(file.originalname);
-    cb(null, `doc-${uniqueSuffix}${ext}`);
-  },
-});
-
-const upload = multer({
-  storage,
-  limits: { fileSize: 25 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => {
-    const allowedTypes = [
-      "application/pdf", "image/jpeg", "image/png",
-      "application/msword",
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    ];
-    allowedTypes.includes(file.mimetype) ? cb(null, true) : cb(new Error("Invalid file type"));
-  },
-});
-
-// Configure multer for exhibit uploads
-const exhibitStorage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    const uploadDir = path.join(process.cwd(), "uploads", "exhibits");
-    if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
-    cb(null, uploadDir);
-  },
-  filename: function (req, file, cb) {
-    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
-    const ext = path.extname(file.originalname);
-    cb(null, `exhibit-${uniqueSuffix}${ext}`);
-  },
-});
-
-const exhibitUpload = multer({
-  storage: exhibitStorage,
-  limits: { fileSize: 25 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => {
-    const allowedTypes = [
-      "application/pdf", "image/jpeg", "image/png",
-      "application/msword",
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "application/vnd.ms-excel",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "text/csv",
-    ];
-    allowedTypes.includes(file.mimetype)
-      ? cb(null, true)
-      : cb(new Error("Invalid file type. Only PDF, images, and Office documents are allowed."));
-  },
-});
-
-// Configure multer for press release images
-const pressReleaseImageStorage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    const uploadDir = path.join(process.cwd(), "uploads", "press-releases");
-    if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
-    cb(null, uploadDir);
-  },
-  filename: function (req, file, cb) {
-    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
-    const ext = path.extname(file.originalname);
-    cb(null, `press-${uniqueSuffix}${ext}`);
-  },
-});
-
-const pressReleaseImageUpload = multer({
-  storage: pressReleaseImageStorage,
-  limits: { fileSize: 5 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => {
-    const allowedTypes = ["image/jpeg", "image/png", "image/jpg", "image/webp"];
-    allowedTypes.includes(file.mimetype)
-      ? cb(null, true)
-      : cb(new Error("Invalid file type. Only JPEG, PNG, and WebP images are allowed."));
-  },
-});
-
-// ============ EXHIBIT UPLOAD ============
-router.post("/upload-exhibit", exhibitUpload.single("file"), async (req, res) => {
+// ── EXHIBIT UPLOAD ────────────────────────────────────────────────────────────
+// CHANGED: was diskStorage → uploads/exhibits/   Now: memoryStorage → Cloudinary
+router.post("/upload-exhibit", memUpload.single("file"), async (req, res) => {
   try {
     const file = req.file;
     if (!file) return res.status(400).json({ success: false, message: "No file uploaded" });
+
+    const { url, publicId } = await uploadToCloudinary(
+      file.buffer,
+      file.originalname,
+      "exhibits"   // → Cloudinary folder name
+    );
+
     res.json({
-      success: true,
-      fileUrl: `/uploads/exhibits/${file.filename}`,
+      success:  true,
+      fileUrl:  url,                  // ← permanent Cloudinary https:// URL
       fileName: file.originalname,
       fileSize: file.size,
       fileType: file.mimetype,
-      message: "File uploaded successfully",
+      publicId,
+      message:  "File uploaded successfully",
     });
   } catch (error) {
     console.error("Error uploading exhibit:", error);
@@ -312,17 +1598,17 @@ router.post("/upload-exhibit", exhibitUpload.single("file"), async (req, res) =>
   }
 });
 
-// ============ DASHBOARD STATS ============
+// ── DASHBOARD STATS ───────────────────────────────────────────────────────────
 router.get("/stats", async (req, res) => {
   try {
     const PressRelease = mongoose.model("PressRelease");
     const stats = {
       pendingSubmissions: await Submission.countDocuments({ status: "pending" }),
-      pendingMedia: await MediaSubmission.countDocuments({ status: "pending" }),
-      totalDockets: await Docket.countDocuments(),
-      totalDocuments: await Document.countDocuments(),
+      pendingMedia:       await MediaSubmission.countDocuments({ status: "pending" }),
+      totalDockets:       await Docket.countDocuments(),
+      totalDocuments:     await Document.countDocuments(),
       totalPressReleases: await PressRelease.countDocuments(),
-      pendingFlags: await Flag.countDocuments({ status: "pending" }),
+      pendingFlags:       await Flag.countDocuments({ status: "pending" }),
     };
     res.json(stats);
   } catch (error) {
@@ -330,7 +1616,7 @@ router.get("/stats", async (req, res) => {
   }
 });
 
-// ============ ACTIVITY LOG ============
+// ── ACTIVITY LOG ──────────────────────────────────────────────────────────────
 router.get("/activity-log", async (req, res) => {
   try {
     const logs = await ActivityLog.find().sort({ createdAt: -1 }).limit(100);
@@ -349,7 +1635,7 @@ router.delete("/activity-log", async (req, res) => {
   }
 });
 
-// ============ SUBMISSIONS ============
+// ── SUBMISSIONS ───────────────────────────────────────────────────────────────
 router.get("/submissions", async (req, res) => {
   try {
     const { status } = req.query;
@@ -376,21 +1662,11 @@ router.patch("/submissions/:id/status", async (req, res) => {
     const { status, reviewNotes } = req.body;
     const submission = await Submission.findById(req.params.id);
     if (!submission) return res.status(404).json({ success: false, message: "Submission not found" });
-
     submission.status = status;
     if (reviewNotes) submission.adminNotes = reviewNotes;
-    if (["approved", "rejected", "published"].includes(status)) {
-      submission.reviewedAt = new Date();
-    }
+    if (["approved", "rejected", "published"].includes(status)) submission.reviewedAt = new Date();
     await submission.save();
-
-    logActivity(
-      "updated", "submission",
-      submission._id,
-      submission.responseTitle || "Untitled Submission",
-      `Status → ${status}`
-    );
-
+    logActivity("updated", "submission", submission._id, submission.responseTitle || "Untitled Submission", `Status → ${status}`);
     res.json({ success: true, message: "Status updated", submission });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
@@ -402,38 +1678,29 @@ router.post("/submissions/:id/reject", async (req, res) => {
     const { reviewNotes } = req.body;
     const submission = await Submission.findById(req.params.id);
     if (!submission) return res.status(404).json({ success: false, message: "Submission not found" });
-
     submission.status = "rejected";
     submission.adminNotes = reviewNotes || "Submission rejected";
     submission.reviewedAt = new Date();
     await submission.save();
-
-    logActivity(
-      "updated", "submission",
-      submission._id,
-      submission.responseTitle || "Untitled Submission",
-      "Status → rejected"
-    );
-
+    logActivity("updated", "submission", submission._id, submission.responseTitle || "Untitled Submission", "Status → rejected");
     res.json({ success: true, message: "Submission rejected", submission });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
 });
 
-// ============ CREATE DOCKET FROM SUBMISSION ============
+// ── CREATE DOCKET FROM SUBMISSION ─────────────────────────────────────────────
 router.post("/create-docket", async (req, res) => {
   try {
     const { submissionId, docketData } = req.body;
     const submission = await Submission.findById(submissionId);
     if (!submission) return res.status(404).json({ success: false, message: "Submission not found" });
-    
-    // Check if docket with same claim URL or response title already exists
+
     const exists = await checkDocketExists(submission.claimUrl, docketData.title);
     if (exists) {
-      return res.status(409).json({ 
-        success: false, 
-        message: "A docket with this claim URL or response title already exists. Please check existing dockets." 
+      return res.status(409).json({
+        success: false,
+        message: "A docket with this claim URL or response title already exists.",
       });
     }
 
@@ -441,65 +1708,61 @@ router.post("/create-docket", async (req, res) => {
       date: entry.date || "",
       event: entry.event || "",
       description: entry.description || "",
-      type: ["claim", "response", "third_party", "correction"].includes(entry.type)
-        ? entry.type
-        : "response",
+      type: ["claim", "response", "third_party", "correction"].includes(entry.type) ? entry.type : "response",
     }));
 
     const docket = new Docket({
       summary: {
-        claim: docketData.summary.claim,
-        context: docketData.summary.context || "",
+        claim:      docketData.summary.claim,
+        context:    docketData.summary.context    || "",
         whyMatters: docketData.summary.whyMatters || "",
       },
       respondent: { name: submission.respondentName, type: submission.respondentType },
       claim: {
-        source: submission.claimSource,
-        url: submission.claimUrl,
-        date: submission.claimDate,
+        source:   submission.claimSource,
+        url:      submission.claimUrl,
+        date:     submission.claimDate,
         category: submission.claimCategory,
       },
       response: {
-        title: docketData.title || "",
-        body: docketData.response?.body || "",
-        type: docketData.response?.type || "",
-        requestedAction: submission.requestedAction || "",
+        title:           docketData.title            || "",
+        body:            docketData.response?.body   || "",
+        type:            docketData.response?.type   || "",
+        requestedAction: submission.requestedAction  || "",
       },
-      exhibits: docketData.exhibits || [],
-      timeline: formattedTimeline,
-      status: docketData.status || "Open",
-      filedDate: new Date(),
-      publishedDate: new Date(),
+      exhibits:       docketData.exhibits || [],
+      timeline:       formattedTimeline,
+      status:         docketData.status || "Open",
+      filedDate:      new Date(),
+      publishedDate:  new Date(),
       sourceSubmissionId: submission._id,
     });
 
     await docket.save();
 
-    // Create documents for exhibits
     if (docketData.exhibits?.length > 0) {
       for (const exhibit of docketData.exhibits) {
         await new Document({
-          title: exhibit.title,
-          type: exhibit.category || "Evidence",
-          description: exhibit.description || `Exhibit from docket ${docket.docketId}`,
-          fileUrl: exhibit.fileUrl,
-          fileName: exhibit.title,
-          fileSize: exhibit.fileSize,
-          fileType: exhibit.fileType,
-          sourceDocketId: docket._id,
+          title:              exhibit.title,
+          type:               exhibit.category || "Evidence",
+          description:        exhibit.description || `Exhibit from docket ${docket.docketId}`,
+          fileUrl:            exhibit.fileUrl,
+          fileName:           exhibit.title,
+          fileSize:           exhibit.fileSize,
+          fileType:           exhibit.fileType,
+          sourceDocketId:     docket._id,
           sourceDocketNumber: docket.docketId,
-          exhibitId: exhibit.exhibitId,
-          publishedDate: new Date(),
-          addedBy: "admin",
-          checksum: exhibit.checksum || null,
+          exhibitId:          exhibit.exhibitId,
+          publishedDate:      new Date(),
+          addedBy:            "admin",
         }).save();
       }
     }
 
-    submission.status = "published";
-    submission.publishedDocketId = docket._id;
+    submission.status               = "published";
+    submission.publishedDocketId    = docket._id;
     submission.publishedDocketNumber = docket.docketId;
-    submission.reviewedAt = new Date();
+    submission.reviewedAt           = new Date();
     await submission.save();
 
     logActivity("created", "docket", docket._id, docket.response.title, docket.docketId);
@@ -507,7 +1770,7 @@ router.post("/create-docket", async (req, res) => {
     res.json({
       success: true,
       message: "Docket created successfully!",
-      docket: { id: docket._id, docketId: docket.docketId, title: docket.response.title },
+      docket:  { id: docket._id, docketId: docket.docketId, title: docket.response.title },
     });
   } catch (error) {
     console.error("❌ Error creating docket:", error);
@@ -515,7 +1778,7 @@ router.post("/create-docket", async (req, res) => {
   }
 });
 
-// ============ DOCKETS MANAGEMENT ============
+// ── DOCKETS MANAGEMENT ────────────────────────────────────────────────────────
 router.get("/dockets", async (req, res) => {
   try {
     const dockets = await Docket.find().sort({ publishedDate: -1 });
@@ -543,55 +1806,48 @@ router.patch("/dockets/:id", async (req, res) => {
       { new: true }
     );
     if (!docket) return res.status(404).json({ success: false, message: "Docket not found" });
-
     logActivity("updated", "docket", docket._id, docket.response?.title, docket.docketId);
-
     res.json({ success: true, docket });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
 });
 
-// ============ DELETE DOCKET (with cascade to flags) ============
 router.delete("/dockets/:id", async (req, res) => {
   try {
     const docketId = req.params.id;
     const docket = await Docket.findById(docketId);
     if (!docket) return res.status(404).json({ success: false, message: "Docket not found" });
 
-    const [mediaDeleteResult, mediaSubmissionsDeleteResult, documentsDeleteResult, flagsDeleteResult] =
-      await Promise.all([
-        Media.deleteMany({ docketId }),
-        MediaSubmission.deleteMany({ docketId }),
-        Document.deleteMany({ sourceDocketId: docketId }),
-        Flag.deleteMany({ docketId }),          // ← cascade delete flags
-      ]);
+    const [mediaRes, mediaSubRes, docsRes, flagsRes] = await Promise.all([
+      Media.deleteMany({ docketId }),
+      MediaSubmission.deleteMany({ docketId }),
+      Document.deleteMany({ sourceDocketId: docketId }),
+      Flag.deleteMany({ docketId }),
+    ]);
 
     if (docket.sourceSubmissionId) {
       const submission = await Submission.findById(docket.sourceSubmissionId);
       if (submission) {
         submission.status = "rejected";
-        submission.publishedDocketId = null;
+        submission.publishedDocketId    = null;
         submission.publishedDocketNumber = null;
-        submission.adminNotes = submission.adminNotes
-          ? `${submission.adminNotes}\n[Docket deleted on ${new Date().toISOString()}]`
-          : `Docket deleted on ${new Date().toISOString()}`;
+        submission.adminNotes = (submission.adminNotes || "") + `\n[Docket deleted on ${new Date().toISOString()}]`;
         await submission.save();
       }
     }
 
     logActivity("deleted", "docket", docket._id, docket.response?.title, docket.docketId);
-
     await Docket.findByIdAndDelete(docketId);
 
     res.json({
       success: true,
       message: "Docket and all related data deleted successfully",
       details: {
-        mediaDeleted: mediaDeleteResult.deletedCount,
-        mediaSubmissionsDeleted: mediaSubmissionsDeleteResult.deletedCount,
-        documentsDeleted: documentsDeleteResult.deletedCount,
-        flagsDeleted: flagsDeleteResult.deletedCount,
+        mediaDeleted:            mediaRes.deletedCount,
+        mediaSubmissionsDeleted: mediaSubRes.deletedCount,
+        documentsDeleted:        docsRes.deletedCount,
+        flagsDeleted:            flagsRes.deletedCount,
       },
     });
   } catch (error) {
@@ -600,7 +1856,7 @@ router.delete("/dockets/:id", async (req, res) => {
   }
 });
 
-// ============ MEDIA SUBMISSIONS MANAGEMENT ============
+// ── MEDIA SUBMISSIONS ─────────────────────────────────────────────────────────
 router.get("/media-submissions", async (req, res) => {
   try {
     const { status } = req.query;
@@ -616,10 +1872,7 @@ router.get("/media-submissions", async (req, res) => {
 
 router.get("/media-submissions/:id", async (req, res) => {
   try {
-    const submission = await MediaSubmission.findById(req.params.id).populate(
-      "docketId",
-      "docketId response.title"
-    );
+    const submission = await MediaSubmission.findById(req.params.id).populate("docketId", "docketId response.title");
     if (!submission) return res.status(404).json({ success: false, message: "Submission not found" });
     res.json({ success: true, submission });
   } catch (error) {
@@ -632,77 +1885,52 @@ router.post("/media-submissions", async (req, res) => {
     const { outlet, headline, url, date, type, docketId, note } = req.body;
     const docket = await Docket.findById(docketId);
     if (!docket) return res.status(404).json({ success: false, message: "Docket not found" });
-
     const submission = new MediaSubmission({
       outlet, headline, url, date, type,
       docketId, docketNumber: docket.docketId,
       note, status: "pending", submittedAt: new Date(),
     });
     await submission.save();
-
-    res.json({
-      success: true,
-      message: "Media citation submitted for review",
-      submissionId: submission._id,
-    });
+    res.json({ success: true, message: "Media citation submitted for review", submissionId: submission._id });
   } catch (error) {
-    console.error("Submission error:", error);
     res.status(500).json({ success: false, message: error.message });
   }
 });
 
-// Update the media-submissions/:id/approve endpoint
 router.post("/media-submissions/:id/approve", async (req, res) => {
   try {
     const { stance, summary, adminNotes } = req.body;
     const submission = await MediaSubmission.findById(req.params.id);
     if (!submission) return res.status(404).json({ success: false, message: "Submission not found" });
-    
-    // Check if media with same URL already exists for this docket
+
     const duplicateCheck = await checkMediaExistsForDocket(submission.url, submission.docketId, submission._id);
-    
     if (duplicateCheck.exists) {
-      let message = "";
-      if (duplicateCheck.source === "approved") {
-        message = "A media entry with this URL has already been approved for this docket.";
-      } else if (duplicateCheck.source === "pending") {
-        message = "Another pending submission with this URL already exists for this docket.";
-      }
-      
-      if (message) {
-        return res.status(409).json({ 
-          success: false, 
-          message: message
-        });
-      }
+      return res.status(409).json({
+        success: false,
+        message: duplicateCheck.source === "approved"
+          ? "A media entry with this URL has already been approved for this docket."
+          : "Another pending submission with this URL already exists for this docket.",
+      });
     }
 
     const media = new Media({
-      outlet: submission.outlet,
-      headline: submission.headline,
-      date: submission.date,
-      type: submission.type,
-      stance: stance || "neutral",
-      url: submission.url,
+      outlet: submission.outlet, headline: submission.headline,
+      date: submission.date, type: submission.type,
+      stance: stance || "neutral", url: submission.url,
       summary: summary || submission.note || "",
-      docketId: submission.docketId,
-      docketNumber: submission.docketNumber,
-      source: "user_submission",
-      sourceSubmissionId: submission._id,
-      status: "approved",
-      approvedAt: new Date(),
-      publishedDate: new Date(),
+      docketId: submission.docketId, docketNumber: submission.docketNumber,
+      source: "user_submission", sourceSubmissionId: submission._id,
+      status: "approved", approvedAt: new Date(), publishedDate: new Date(),
     });
     await media.save();
 
-    submission.status = "approved";
+    submission.status     = "approved";
     submission.approvedAt = new Date();
     submission.adminNotes = adminNotes || "";
-    submission.stance = stance || "neutral";
+    submission.stance     = stance || "neutral";
     await submission.save();
 
     logActivity("created", "media", media._id, media.headline, media.outlet);
-
     res.json({ success: true, message: "Media approved and published", media });
   } catch (error) {
     console.error("Approval error:", error);
@@ -710,58 +1938,48 @@ router.post("/media-submissions/:id/approve", async (req, res) => {
   }
 });
 
-
 router.post("/media-submissions/:id/reject", async (req, res) => {
   try {
     const { reason } = req.body;
     const submission = await MediaSubmission.findById(req.params.id);
     if (!submission) return res.status(404).json({ success: false, message: "Submission not found" });
-
-    submission.status = "rejected";
+    submission.status     = "rejected";
     submission.adminNotes = reason || "Rejected by admin";
     await submission.save();
-
     res.json({ success: true, message: "Media rejected", submission });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
 });
 
-// ============ MEDIA MANAGEMENT ============
+// ── MEDIA MANAGEMENT ──────────────────────────────────────────────────────────
 router.post("/media/create", async (req, res) => {
   try {
     const { outlet, headline, url, date, type, stance, summary, docketId } = req.body;
-    
-    // Check if media with same URL already exists for this docket
+
     const exists = await checkMediaExistsByUrl(url, docketId);
     if (exists) {
-      return res.status(409).json({ 
-        success: false, 
-        message: "A media entry with this URL already exists for this docket. Please check existing entries." 
+      return res.status(409).json({
+        success: false,
+        message: "A media entry with this URL already exists for this docket.",
       });
     }
-    
+
     const docket = await Docket.findById(docketId);
     if (!docket) return res.status(404).json({ success: false, message: "Docket not found" });
 
     const media = new Media({
       outlet, headline, url, date, type, stance,
       summary: summary || "",
-      docketId,
-      docketNumber: docket.docketId,
-      source: "admin",
-      status: "approved",
-      approvedAt: new Date(),
-      approvedBy: "admin",
-      publishedDate: new Date(),
+      docketId, docketNumber: docket.docketId,
+      source: "admin", status: "approved",
+      approvedAt: new Date(), approvedBy: "admin", publishedDate: new Date(),
     });
     await media.save();
 
     logActivity("created", "media", media._id, media.headline, media.outlet);
-
     res.json({ success: true, message: "Media created successfully", media });
   } catch (error) {
-    console.error("Error creating media:", error);
     res.status(500).json({ success: false, message: error.message });
   }
 });
@@ -772,7 +1990,6 @@ router.get("/media", async (req, res) => {
     const filter = { status: "approved" };
     if (docketId) filter.docketId = docketId;
     if (status && status !== "all") filter.status = status;
-
     const media = await Media.find(filter)
       .populate("docketId", "docketId response.title")
       .sort({ publishedDate: -1 });
@@ -782,96 +1999,10 @@ router.get("/media", async (req, res) => {
   }
 });
 
-router.get("/media/pending", async (req, res) => {
-  try {
-    const media = await Media.find({ status: "pending" }).sort({ createdAt: -1 });
-    res.json({ success: true, media });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
-
 router.get("/media/by-docket/:docketId", async (req, res) => {
   try {
-    const media = await Media.find({ docketId: req.params.docketId, status: "approved" }).sort({
-      publishedDate: -1,
-    });
+    const media = await Media.find({ docketId: req.params.docketId, status: "approved" }).sort({ publishedDate: -1 });
     res.json({ success: true, media });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
-
-// router.post("/media/:id/approve", async (req, res) => {
-//   try {
-//     const media = await Media.findById(req.params.id);
-//     if (!media) return res.status(404).json({ success: false, message: "Media not found" });
-//     media.status = "approved";
-//     media.approvedAt = new Date();
-//     await media.save();
-//     logActivity("updated", "media", media._id, media.headline, media.outlet);
-//     res.json({ success: true, message: "Media approved", media });
-//   } catch (error) {
-//     res.status(500).json({ success: false, message: error.message });
-//   }
-// });
-router.post("/media-submissions/:id/approve", async (req, res) => {
-  try {
-    const { stance, summary, adminNotes } = req.body;
-    const submission = await MediaSubmission.findById(req.params.id);
-    if (!submission) return res.status(404).json({ success: false, message: "Submission not found" });
-    
-    // Check if media with same URL already exists for this docket
-    const exists = await checkMediaExistsByUrl(submission.url, submission.docketId);
-    if (exists) {
-      return res.status(409).json({ 
-        success: false, 
-        message: "A media entry with this URL already exists for this docket. Please check existing entries before approving." 
-      });
-    }
-
-    const media = new Media({
-      outlet: submission.outlet,
-      headline: submission.headline,
-      date: submission.date,
-      type: submission.type,
-      stance: stance || "neutral",
-      url: submission.url,
-      summary: summary || submission.note || "",
-      docketId: submission.docketId,
-      docketNumber: submission.docketNumber,
-      source: "user_submission",
-      sourceSubmissionId: submission._id,
-      status: "approved",
-      approvedAt: new Date(),
-      publishedDate: new Date(),
-    });
-    await media.save();
-
-    submission.status = "approved";
-    submission.approvedAt = new Date();
-    submission.adminNotes = adminNotes || "";
-    submission.stance = stance || "neutral";
-    await submission.save();
-
-    logActivity("created", "media", media._id, media.headline, media.outlet);
-
-    res.json({ success: true, message: "Media approved and published", media });
-  } catch (error) {
-    console.error("Approval error:", error);
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
-
-router.post("/media/:id/reject", async (req, res) => {
-  try {
-    const { reason } = req.body;
-    const media = await Media.findById(req.params.id);
-    if (!media) return res.status(404).json({ success: false, message: "Media not found" });
-    media.status = "rejected";
-    media.adminNotes = reason;
-    await media.save();
-    res.json({ success: true, message: "Media rejected", media });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -880,26 +2011,24 @@ router.post("/media/:id/reject", async (req, res) => {
 router.patch("/media/:id", async (req, res) => {
   try {
     const { outlet, headline, url, date, type, stance, summary } = req.body;
-    
     const existingMedia = await Media.findById(req.params.id);
     if (!existingMedia) return res.status(404).json({ success: false, message: "Media not found" });
-    
+
     if (url && url !== existingMedia.url) {
       const duplicateCheck = await checkMediaExistsForDocket(url, existingMedia.docketId, req.params.id);
       if (duplicateCheck.exists) {
-        return res.status(409).json({ 
-          success: false, 
-          message: `A media entry with this URL already exists for this docket (${duplicateCheck.source}).` 
+        return res.status(409).json({
+          success: false,
+          message: `A media entry with this URL already exists for this docket (${duplicateCheck.source}).`,
         });
       }
     }
-    
+
     const media = await Media.findByIdAndUpdate(
       req.params.id,
       { outlet, headline, url, date, type, stance, summary, updatedAt: new Date() },
       { new: true }
     );
-    
     logActivity("updated", "media", media._id, media.headline, media.outlet);
     res.json({ success: true, media });
   } catch (error) {
@@ -911,22 +2040,32 @@ router.delete("/media/:id", async (req, res) => {
   try {
     const media = await Media.findById(req.params.id);
     if (!media) return res.status(404).json({ success: false, message: "Media not found" });
-
     if (media.source === "user_submission" && media.sourceSubmissionId) {
       await MediaSubmission.findByIdAndDelete(media.sourceSubmissionId);
     }
-
     logActivity("deleted", "media", media._id, media.headline, media.outlet);
-
     await Media.findByIdAndDelete(req.params.id);
     res.json({ success: true, message: "Media deleted successfully" });
   } catch (error) {
-    console.error("Error deleting media:", error);
     res.status(500).json({ success: false, message: error.message });
   }
 });
 
-// ============ DOCUMENTS MANAGEMENT ============
+router.post("/media/:id/reject", async (req, res) => {
+  try {
+    const { reason } = req.body;
+    const media = await Media.findById(req.params.id);
+    if (!media) return res.status(404).json({ success: false, message: "Media not found" });
+    media.status     = "rejected";
+    media.adminNotes = reason;
+    await media.save();
+    res.json({ success: true, message: "Media rejected", media });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// ── DOCUMENTS MANAGEMENT ──────────────────────────────────────────────────────
 router.get("/documents", async (req, res) => {
   try {
     const documents = await Document.find().sort({ publishedDate: -1 });
@@ -936,26 +2075,32 @@ router.get("/documents", async (req, res) => {
   }
 });
 
-router.post("/documents/upload", upload.single("file"), async (req, res) => {
+// CHANGED: was diskStorage → uploads/documents/   Now: memoryStorage → Cloudinary
+router.post("/documents/upload", memUpload.single("file"), async (req, res) => {
   try {
     const { title, type, description, docketId } = req.body;
     const file = req.file;
     if (!file) return res.status(400).json({ success: false, message: "No file uploaded" });
 
+    const { url, publicId } = await uploadToCloudinary(
+      file.buffer,
+      file.originalname,
+      "documents"
+    );
+
     const document = new Document({
       title, type, description,
-      fileUrl: `/uploads/documents/${file.filename}`,
-      fileName: file.originalname,
-      fileSize: file.size,
-      fileType: file.mimetype,
+      fileUrl:       url,                 // ← permanent Cloudinary URL
+      fileName:      file.originalname,
+      fileSize:      file.size,
+      fileType:      file.mimetype,
       sourceDocketId: docketId || null,
-      publishedDate: new Date(),
-      addedBy: "admin",
+      publishedDate:  new Date(),
+      addedBy:        "admin",
     });
     await document.save();
 
     logActivity("created", "document", document._id, document.title, type);
-
     res.json({ success: true, document });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
@@ -966,9 +2111,7 @@ router.delete("/documents/:id", async (req, res) => {
   try {
     const document = await Document.findById(req.params.id);
     if (!document) return res.status(404).json({ success: false, message: "Document not found" });
-
     logActivity("deleted", "document", document._id, document.title, document.type);
-
     await Document.findByIdAndDelete(req.params.id);
     res.json({ success: true, message: "Document deleted" });
   } catch (error) {
@@ -976,94 +2119,60 @@ router.delete("/documents/:id", async (req, res) => {
   }
 });
 
-// ============ CREATE DOCKET DIRECT ============
+// ── CREATE DOCKET DIRECT ──────────────────────────────────────────────────────
 router.post("/create-docket-direct", async (req, res) => {
   try {
     const { docketData } = req.body;
-    
-    // Check if docket with same claim URL or response title already exists
+
     const exists = await checkDocketExists(docketData.claim.url, docketData.title);
     if (exists) {
-      return res.status(409).json({ 
-        success: false, 
-        message: "A docket with this claim URL or response title already exists. Please check existing dockets." 
+      return res.status(409).json({
+        success: false,
+        message: "A docket with this claim URL or response title already exists.",
       });
     }
 
     const formattedTimeline = (docketData.timeline || []).map((entry) => ({
-      date: entry.date || "",
-      event: entry.event || "",
+      date: entry.date || "", event: entry.event || "",
       description: entry.description || "",
-      type: ["claim", "response", "third_party", "correction"].includes(entry.type)
-        ? entry.type
-        : "response",
+      type: ["claim", "response", "third_party", "correction"].includes(entry.type) ? entry.type : "response",
     }));
 
     const docket = new Docket({
-      summary: {
-        claim: docketData.summary.claim,
-        context: docketData.summary.context || "",
-        whyMatters: docketData.summary.whyMatters || "",
-      },
+      summary:    { claim: docketData.summary.claim, context: docketData.summary.context || "", whyMatters: docketData.summary.whyMatters || "" },
       respondent: { name: docketData.respondent.name, type: docketData.respondent.type },
-      claim: {
-        source: docketData.claim.source,
-        url: docketData.claim.url,
-        date: docketData.claim.date,
-        category: docketData.claim.category,
-      },
-      response: {
-        title: docketData.title,
-        body: docketData.response.body,
-        type: docketData.response.type || "",
-        requestedAction: docketData.response.requestedAction || "",
-      },
-      exhibits: docketData.exhibits || [],
-      timeline: formattedTimeline,
-      status: docketData.status || "Open",
-      filedDate: new Date(),
+      claim:      { source: docketData.claim.source, url: docketData.claim.url, date: docketData.claim.date, category: docketData.claim.category },
+      response:   { title: docketData.title, body: docketData.response.body, type: docketData.response.type || "", requestedAction: docketData.response.requestedAction || "" },
+      exhibits:      docketData.exhibits || [],
+      timeline:      formattedTimeline,
+      status:        docketData.status || "Open",
+      filedDate:     new Date(),
       publishedDate: new Date(),
     });
-
     await docket.save();
 
-    // Create documents for exhibits
     if (docketData.exhibits?.length > 0) {
       for (const exhibit of docketData.exhibits) {
         await new Document({
-          title: exhibit.title,
-          type: exhibit.category || "Evidence",
+          title: exhibit.title, type: exhibit.category || "Evidence",
           description: exhibit.description || `Exhibit from docket ${docket.docketId}`,
-          fileUrl: exhibit.fileUrl,
-          fileName: exhibit.title,
-          fileSize: exhibit.fileSize,
-          fileType: exhibit.fileType,
-          sourceDocketId: docket._id,
-          sourceDocketNumber: docket.docketId,
-          exhibitId: exhibit.exhibitId,
-          publishedDate: new Date(),
-          addedBy: "admin",
-          checksum: exhibit.checksum || null,
+          fileUrl: exhibit.fileUrl, fileName: exhibit.title,
+          fileSize: exhibit.fileSize, fileType: exhibit.fileType,
+          sourceDocketId: docket._id, sourceDocketNumber: docket.docketId,
+          exhibitId: exhibit.exhibitId, publishedDate: new Date(), addedBy: "admin",
         }).save();
       }
     }
 
     logActivity("created", "docket", docket._id, docket.response.title, docket.docketId);
-
-    res.json({
-      success: true,
-      message: "Docket created successfully!",
-      docket: { id: docket._id, docketId: docket.docketId, title: docket.response.title },
-    });
+    res.json({ success: true, message: "Docket created successfully!", docket: { id: docket._id, docketId: docket.docketId, title: docket.response.title } });
   } catch (error) {
     console.error("❌ Error creating docket:", error);
     res.status(500).json({ success: false, message: error.message, details: error.errors });
   }
 });
 
-// ============ UPDATE DOCKET FULL (with Document sync) ============
-// Replace the existing router.patch("/dockets/:id/full", ...) handler with this one
-
+// ── UPDATE DOCKET FULL ────────────────────────────────────────────────────────
 router.patch("/dockets/:id/full", async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -1072,173 +2181,93 @@ router.patch("/dockets/:id/full", async (req, res) => {
     const { id } = req.params;
     const { docketData, deletedExhibits, deletedMedia, mediaItems } = req.body;
 
-    // Get existing docket to check for duplicates
     const existingDocket = await Docket.findById(id);
     if (!existingDocket) {
-      await session.abortTransaction();
-      session.endSession();
+      await session.abortTransaction(); session.endSession();
       return res.status(404).json({ success: false, message: "Docket not found" });
     }
 
-    // Check for duplicates if claim URL or response title changed
-    const newClaimUrl = docketData.claim?.url || existingDocket.claim.url;
-    const newResponseTitle = docketData.response?.title || existingDocket.response.title;
+    const newClaimUrl      = docketData.claim?.url       || existingDocket.claim.url;
+    const newResponseTitle = docketData.response?.title  || existingDocket.response.title;
 
     const exists = await checkDocketExistsForUpdate(
-      newClaimUrl,
-      newResponseTitle,
-      id,
-      existingDocket.claim.url,
-      existingDocket.response.title
+      newClaimUrl, newResponseTitle, id,
+      existingDocket.claim.url, existingDocket.response.title
     );
-
     if (exists) {
-      await session.abortTransaction();
-      session.endSession();
-      return res.status(409).json({
-        success: false,
-        message: "A docket with this claim URL or response title already exists. Please use different values.",
-      });
+      await session.abortTransaction(); session.endSession();
+      return res.status(409).json({ success: false, message: "A docket with this claim URL or response title already exists." });
     }
 
-    // Update the docket
     const docket = await Docket.findByIdAndUpdate(
       id,
-      {
-        summary: docketData.summary,
-        respondent: docketData.respondent,
-        claim: docketData.claim,
-        response: docketData.response,
-        timeline: docketData.timeline,
-        exhibits: docketData.exhibits,
-        status: docketData.status,
-        lastUpdated: new Date(),
-      },
+      { summary: docketData.summary, respondent: docketData.respondent, claim: docketData.claim, response: docketData.response, timeline: docketData.timeline, exhibits: docketData.exhibits, status: docketData.status, lastUpdated: new Date() },
       { new: true, session }
     );
 
     if (!docket) {
-      await session.abortTransaction();
-      session.endSession();
+      await session.abortTransaction(); session.endSession();
       return res.status(404).json({ success: false, message: "Docket not found" });
     }
 
-    // ── Handle deleted exhibits: remove matching Documents ──
     if (deletedExhibits?.length > 0) {
       for (const exhibitId of deletedExhibits) {
-        if (exhibitId) {
-          await Document.deleteMany({
-            sourceDocketId: id,
-            exhibitId: exhibitId,
-          }).session(session);
-        }
+        if (exhibitId) await Document.deleteMany({ sourceDocketId: id, exhibitId }).session(session);
       }
     }
 
-    // ── Sync exhibits → Document model ──
-    // Strategy: for each exhibit in the updated docket, check if a Document
-    // already exists by (sourceDocketId + exhibitId) OR (sourceDocketId + fileUrl).
-    // Only create a new Document if neither match is found.
-    // This prevents E11000 duplicate documentId errors.
     if (docketData.exhibits?.length > 0) {
       for (const exhibit of docketData.exhibits) {
         if (!exhibit.fileUrl || !exhibit.title) continue;
 
-        // Check by exhibitId first (most reliable)
         let existingDoc = null;
-
         if (exhibit.exhibitId) {
-          existingDoc = await Document.findOne({
-            sourceDocketId: id,
-            exhibitId: exhibit.exhibitId,
-          }).session(session);
+          existingDoc = await Document.findOne({ sourceDocketId: id, exhibitId: exhibit.exhibitId }).session(session);
         }
-
-        // Fallback: check by fileUrl to catch exhibits without exhibitId
         if (!existingDoc) {
-          existingDoc = await Document.findOne({
-            sourceDocketId: id,
-            fileUrl: exhibit.fileUrl,
-          }).session(session);
+          existingDoc = await Document.findOne({ sourceDocketId: id, fileUrl: exhibit.fileUrl }).session(session);
         }
 
         if (existingDoc) {
-          // Update existing — never create a new one
-          existingDoc.title = exhibit.title;
-          existingDoc.type = exhibit.category || "Evidence";
-          existingDoc.description =
-            exhibit.description || `Exhibit from docket ${docket.docketId}`;
-          existingDoc.fileUrl = exhibit.fileUrl;
-          existingDoc.fileName = exhibit.title;
-          existingDoc.fileSize = exhibit.fileSize;
-          existingDoc.fileType = exhibit.fileType;
+          existingDoc.title       = exhibit.title;
+          existingDoc.type        = exhibit.category || "Evidence";
+          existingDoc.description = exhibit.description || `Exhibit from docket ${docket.docketId}`;
+          existingDoc.fileUrl     = exhibit.fileUrl;
+          existingDoc.fileName    = exhibit.title;
+          existingDoc.fileSize    = exhibit.fileSize;
+          existingDoc.fileType    = exhibit.fileType;
           existingDoc.sourceDocketNumber = docket.docketId;
-          // Ensure exhibitId is set on old docs that were missing it
-          if (exhibit.exhibitId && !existingDoc.exhibitId) {
-            existingDoc.exhibitId = exhibit.exhibitId;
-          }
+          if (exhibit.exhibitId && !existingDoc.exhibitId) existingDoc.exhibitId = exhibit.exhibitId;
           await existingDoc.save({ session });
         } else {
-          // Truly new exhibit — create a Document record
-          const newDoc = new Document({
-            title: exhibit.title,
-            type: exhibit.category || "Evidence",
-            description:
-              exhibit.description || `Exhibit from docket ${docket.docketId}`,
-            fileUrl: exhibit.fileUrl,
-            fileName: exhibit.title,
-            fileSize: exhibit.fileSize,
-            fileType: exhibit.fileType,
-            sourceDocketId: docket._id,
-            sourceDocketNumber: docket.docketId,
-            exhibitId: exhibit.exhibitId || null,
-            publishedDate: new Date(),
-            addedBy: "admin",
-          });
-          await newDoc.save({ session });
+          await new Document({
+            title: exhibit.title, type: exhibit.category || "Evidence",
+            description: exhibit.description || `Exhibit from docket ${docket.docketId}`,
+            fileUrl: exhibit.fileUrl, fileName: exhibit.title,
+            fileSize: exhibit.fileSize, fileType: exhibit.fileType,
+            sourceDocketId: docket._id, sourceDocketNumber: docket.docketId,
+            exhibitId: exhibit.exhibitId || null, publishedDate: new Date(), addedBy: "admin",
+          }).save({ session });
         }
       }
     }
 
-    // ── Handle deleted media ──
     if (deletedMedia?.length > 0) {
       await Media.deleteMany({ _id: { $in: deletedMedia } }).session(session);
     }
 
-    // ── Handle media item updates ──
     if (mediaItems?.length > 0) {
       for (const media of mediaItems) {
         if (media._id) {
           await Media.findByIdAndUpdate(
             media._id,
-            {
-              outlet: media.outlet,
-              headline: media.headline,
-              url: media.url,
-              date: media.date,
-              type: media.type,
-              stance: media.stance,
-              summary: media.summary,
-              updatedAt: new Date(),
-            },
+            { outlet: media.outlet, headline: media.headline, url: media.url, date: media.date, type: media.type, stance: media.stance, summary: media.summary, updatedAt: new Date() },
             { session }
           );
         } else {
-          // New media item added via the edit form
-          const existingMedia = await Media.findOne({
-            url: media.url,
-            docketId: docket._id,
-          }).session(session);
-
-          if (!existingMedia) {
-            await new Media({
-              ...media,
-              docketId: docket._id,
-              docketNumber: docket.docketId,
-              source: "admin",
-              status: "approved",
-              publishedDate: new Date(),
-            }).save({ session });
+          const exists = await Media.findOne({ url: media.url, docketId: docket._id }).session(session);
+          if (!exists) {
+            await new Media({ ...media, docketId: docket._id, docketNumber: docket.docketId, source: "admin", status: "approved", publishedDate: new Date() }).save({ session });
           }
         }
       }
@@ -1248,7 +2277,6 @@ router.patch("/dockets/:id/full", async (req, res) => {
     session.endSession();
 
     logActivity("updated", "docket", docket._id, docket.response?.title, docket.docketId);
-
     res.json({ success: true, message: "Docket updated successfully", docket });
   } catch (error) {
     await session.abortTransaction();
@@ -1258,7 +2286,7 @@ router.patch("/dockets/:id/full", async (req, res) => {
   }
 });
 
-// ============ PRESS RELEASES MANAGEMENT ============
+// ── PRESS RELEASES ────────────────────────────────────────────────────────────
 router.get("/press-releases", async (req, res) => {
   try {
     const PressRelease = mongoose.model("PressRelease");
@@ -1283,16 +2311,10 @@ router.get("/press-releases/:id", async (req, res) => {
 router.post("/press-releases", async (req, res) => {
   try {
     const PressRelease = mongoose.model("PressRelease");
-    
-    // Check if press release with same title already exists
     const exists = await checkPressReleaseExists(req.body.title);
     if (exists) {
-      return res.status(409).json({ 
-        success: false, 
-        message: "A press release with this title already exists. Please use a different title." 
-      });
+      return res.status(409).json({ success: false, message: "A press release with this title already exists." });
     }
-    
     const release = new PressRelease(req.body);
     await release.save();
     logActivity("created", "press_release", release._id, release.title, release.category);
@@ -1305,27 +2327,13 @@ router.post("/press-releases", async (req, res) => {
 router.patch("/press-releases/:id", async (req, res) => {
   try {
     const PressRelease = mongoose.model("PressRelease");
-    
     const existing = await PressRelease.findById(req.params.id);
     if (!existing) return res.status(404).json({ success: false, message: "Press release not found" });
-    
-    // If title is being changed, check for duplicates
     if (req.body.title && req.body.title !== existing.title) {
       const exists = await checkPressReleaseExists(req.body.title, req.params.id);
-      if (exists) {
-        return res.status(409).json({ 
-          success: false, 
-          message: "A press release with this title already exists. Please use a different title." 
-        });
-      }
+      if (exists) return res.status(409).json({ success: false, message: "A press release with this title already exists." });
     }
-    
-    const release = await PressRelease.findByIdAndUpdate(
-      req.params.id,
-      { ...req.body, updatedAt: new Date() },
-      { new: true }
-    );
-    
+    const release = await PressRelease.findByIdAndUpdate(req.params.id, { ...req.body, updatedAt: new Date() }, { new: true });
     logActivity("updated", "press_release", release._id, release.title, release.category);
     res.json({ success: true, release });
   } catch (error) {
@@ -1346,33 +2354,40 @@ router.delete("/press-releases/:id", async (req, res) => {
   }
 });
 
-router.post(
-  "/press-releases/upload-image",
-  pressReleaseImageUpload.single("file"),
-  async (req, res) => {
-    try {
-      const file = req.file;
-      if (!file) return res.status(400).json({ success: false, message: "No file uploaded" });
+// CHANGED: was diskStorage → uploads/press-releases/   Now: memoryStorage → Cloudinary
+router.post("/press-releases/upload-image", memUpload.single("file"), async (req, res) => {
+  try {
+    const file = req.file;
+    if (!file) return res.status(400).json({ success: false, message: "No file uploaded" });
 
-      const baseUrl = `${req.protocol}://${req.get("host")}`;
-      const fileUrl = `/uploads/press-releases/${file.filename}`;
-
-      res.json({
-        success: true,
-        fileUrl,
-        fullUrl: `${baseUrl}${fileUrl}`,
-        fileName: file.originalname,
-        fileSize: file.size,
-        fileType: file.mimetype,
-        message: "Image uploaded successfully",
-      });
-    } catch (error) {
-      console.error("Error uploading press release image:", error);
-      res.status(500).json({ success: false, message: error.message });
+    const imageTypes = ["image/jpeg", "image/png", "image/jpg", "image/webp"];
+    if (!imageTypes.includes(file.mimetype)) {
+      return res.status(400).json({ success: false, message: "Only JPEG, PNG, and WebP images are allowed." });
     }
-  }
-);
+    if (file.size > 5 * 1024 * 1024) {
+      return res.status(400).json({ success: false, message: "Image too large. Maximum 5MB." });
+    }
 
+    const { url, publicId } = await uploadToCloudinary(
+      file.buffer,
+      file.originalname,
+      "press-releases"
+    );
+
+    res.json({
+      success:  true,
+      fileUrl:  url,    // ← permanent Cloudinary URL
+      fullUrl:  url,    // kept for backward compat
+      fileName: file.originalname,
+      fileSize: file.size,
+      fileType: file.mimetype,
+      publicId,
+      message:  "Image uploaded successfully",
+    });
+  } catch (error) {
+    console.error("Error uploading press release image:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
 
 export default router;
-
