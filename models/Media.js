@@ -8,7 +8,7 @@ const mediaSchema = new mongoose.Schema({
   date: { type: String, required: true },
   type: { 
     type: String, 
-    enum: ["Original Report", "Follow-up", "Opinion", "News", "Fact-Check", "Regional"],
+    enum: ["Original Report", "Follow-up", "Opinion", "News", "Fact-Check", "Regional", "Other"],
     required: true 
   },
   stance: { 
