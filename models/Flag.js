@@ -68,14 +68,10 @@ const flagSchema = new mongoose.Schema(
 );
 
 // ✅ FIXED: async middleware WITHOUT next()
-flagSchema.pre("save", async function () {
-  if (this.flagId) return;
-
-  try {
-    const count = await mongoose.model("Flag").countDocuments();
-    this.flagId = `FLAG-${String(count + 1).padStart(4, "0")}`;
-  } catch (err) {
-    throw err; // let mongoose handle errors
+flagSchema.pre("save", function () {
+  if (!this.flagId) {
+    const random = Math.floor(1000 + Math.random() * 9000);
+    this.flagId = `FLAG-${Date.now()}-${random}`;
   }
 });
 

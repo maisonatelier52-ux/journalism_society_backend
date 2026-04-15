@@ -13,7 +13,7 @@ const activityLogSchema = new mongoose.Schema(
     },
     entityType: {
       type: String,
-      enum: ["submission", "docket", "media", "press_release", "document", "flag"],
+      enum: ["submission", "docket", "media", "press_release", "document", "flag", "correction"],
       required: true,
     },
     entityId: String,

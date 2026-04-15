@@ -17,6 +17,7 @@ import adminRoutes from "./routes/adminRoutes.js";
 import pressReleaseRoutes from "./routes/pressReleaseRoutes.js";
 import searchRoutes from "./routes/searchRoutes.js";
 import flagRoutes from "./routes/flagRoutes.js"
+import correctionRoutes from "./routes/correctionRoutes.js"; 
 // Get __dirname equivalent in ES modules
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -44,6 +45,7 @@ app.use("/api/admin", adminRoutes);
 app.use("/api/press-releases", pressReleaseRoutes);
 app.use("/api/search", searchRoutes);
 app.use("/api/flags", flagRoutes);
+app.use("/api/corrections", correctionRoutes);
 
 app.get("/", (req, res) => {
   res.json({ message: "Backend is running 🚀" });

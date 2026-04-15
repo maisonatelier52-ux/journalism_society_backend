@@ -1443,6 +1443,8 @@ const protectedRoutes = [
   "/media-submissions/:id/approve", "/media-submissions/:id/reject",
   "/documents", "/documents/upload", "/press-releases", "/press-releases/:id",
   "/press-releases/upload-image", "/upload-exhibit", "/activity-log",
+  "/flags", "/flags/:id", "/flags/:id/resolve", "/flags/:id/reject", 
+  "/flags/bulk/resolve", "/flags/bulk/reject",
 ];
 router.use(protectedRoutes, verifyAdminToken);
 
@@ -2386,6 +2388,266 @@ router.post("/press-releases/upload-image", memUpload.single("file"), async (req
     });
   } catch (error) {
     console.error("Error uploading press release image:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+
+
+// ============ FLAG MANAGEMENT (Add to adminRoutes.js) ============
+
+// GET all flags (for admin panel)
+router.get("/flags", async (req, res) => {
+  try {
+    const { status, docketId } = req.query;
+    const filter = {};
+    if (status && status !== "all") filter.status = status;
+    if (docketId) filter.docketId = docketId;
+    
+    const flags = await Flag.find(filter)
+      .populate("docketId", "docketId response.title")
+      .sort({ createdAt: -1 });
+    
+    res.json({ success: true, flags });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// GET single flag
+router.get("/flags/:id", async (req, res) => {
+  try {
+    const flag = await Flag.findById(req.params.id).populate("docketId", "docketId response.title");
+    if (!flag) return res.status(404).json({ success: false, message: "Flag not found" });
+    res.json({ success: true, flag });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// RESOLVE a flag (with optional correction)
+router.post("/flags/:id/resolve", async (req, res) => {
+  try {
+    const { resolution, adminNotes, createCorrection, correctionDescription, correctionType } = req.body;
+    
+    const flag = await Flag.findById(req.params.id);
+    if (!flag) {
+      return res.status(404).json({ success: false, message: "Flag not found" });
+    }
+    
+    if (flag.status !== "pending") {
+      return res.status(400).json({ success: false, message: `Flag is already ${flag.status}` });
+    }
+    
+    const docket = await Docket.findById(flag.docketId);
+    if (!docket) {
+      return res.status(404).json({ success: false, message: "Docket not found" });
+    }
+    
+    // Update flag status
+    flag.status = "resolved";
+    flag.resolution = resolution || "Flag resolved by admin";
+    flag.adminNotes = adminNotes || flag.adminNotes || "";
+    flag.reviewedAt = new Date();
+    await flag.save();
+    
+    // Log flag resolution activity
+    logActivity(
+      "updated",
+      "flag",
+      flag._id,
+      `Flag ${flag.flagId} on ${flag.docketNumber}`,
+      `Resolved: ${flag.resolution.substring(0, 50)}${flag.resolution.length > 50 ? "..." : ""}`
+    );
+    
+    // Optionally create a correction
+    let correction = null;
+    if (createCorrection && correctionDescription) {
+      correction = await Correction.create({
+        docketId: flag.docketId,
+        docketNumber: flag.docketNumber,
+        docketTitle: flag.docketTitle || docket.response?.title || "",
+        type: correctionType || "Correction",
+        description: correctionDescription.trim(),
+        sourceFlagId: flag._id,
+        sourceFlagNumber: flag.flagId,
+        createdBy: "admin",
+      });
+      
+      logActivity(
+        "created",
+        "correction",
+        correction._id,
+        `Correction on ${flag.docketNumber}`,
+        `From flag ${flag.flagId}`
+      );
+    }
+    
+    res.json({
+      success: true,
+      message: "Flag resolved successfully",
+      flag,
+      correction,
+    });
+  } catch (error) {
+    console.error("Error resolving flag:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// REJECT a flag (dismiss as invalid)
+router.post("/flags/:id/reject", async (req, res) => {
+  try {
+    const { rejectionReason, adminNotes } = req.body;
+    
+    const flag = await Flag.findById(req.params.id);
+    if (!flag) {
+      return res.status(404).json({ success: false, message: "Flag not found" });
+    }
+    
+    if (flag.status !== "pending") {
+      return res.status(400).json({ success: false, message: `Flag is already ${flag.status}` });
+    }
+    
+    flag.status = "rejected";
+    flag.resolution = rejectionReason || "Flag rejected - insufficient evidence or invalid claim";
+    flag.adminNotes = adminNotes || flag.adminNotes || "";
+    flag.reviewedAt = new Date();
+    await flag.save();
+    
+    // Log flag rejection activity
+    logActivity(
+      "updated",
+      "flag",
+      flag._id,
+      `Flag ${flag.flagId} on ${flag.docketNumber}`,
+      `Rejected: ${flag.resolution.substring(0, 50)}${flag.resolution.length > 50 ? "..." : ""}`
+    );
+    
+    res.json({
+      success: true,
+      message: "Flag rejected successfully",
+      flag,
+    });
+  } catch (error) {
+    console.error("Error rejecting flag:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// DELETE a flag (permanently remove)
+router.delete("/flags/:id", async (req, res) => {
+  try {
+    const flag = await Flag.findById(req.params.id);
+    if (!flag) {
+      return res.status(404).json({ success: false, message: "Flag not found" });
+    }
+    
+    // Log before deleting
+    logActivity(
+      "deleted",
+      "flag",
+      flag._id,
+      `Flag ${flag.flagId} on ${flag.docketNumber}`,
+      `Status was: ${flag.status}`
+    );
+    
+    await Flag.findByIdAndDelete(req.params.id);
+    
+    res.json({
+      success: true,
+      message: "Flag deleted successfully",
+    });
+  } catch (error) {
+    console.error("Error deleting flag:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// BULK resolve flags
+router.post("/flags/bulk/resolve", async (req, res) => {
+  try {
+    const { flagIds, resolution, adminNotes } = req.body;
+    
+    if (!flagIds || !flagIds.length) {
+      return res.status(400).json({ success: false, message: "No flag IDs provided" });
+    }
+    
+    const flags = await Flag.find({ _id: { $in: flagIds }, status: "pending" });
+    
+    const results = [];
+    for (const flag of flags) {
+      flag.status = "resolved";
+      flag.resolution = resolution || "Bulk resolved by admin";
+      flag.adminNotes = adminNotes || flag.adminNotes || "";
+      flag.reviewedAt = new Date();
+      await flag.save();
+      
+      results.push({
+        flagId: flag.flagId,
+        docketNumber: flag.docketNumber,
+      });
+      
+      logActivity(
+        "updated",
+        "flag",
+        flag._id,
+        `Flag ${flag.flagId} on ${flag.docketNumber}`,
+        "Bulk resolved"
+      );
+    }
+    
+    res.json({
+      success: true,
+      message: `${results.length} flags resolved successfully`,
+      resolvedCount: results.length,
+    });
+  } catch (error) {
+    console.error("Error bulk resolving flags:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// BULK reject flags
+router.post("/flags/bulk/reject", async (req, res) => {
+  try {
+    const { flagIds, rejectionReason, adminNotes } = req.body;
+    
+    if (!flagIds || !flagIds.length) {
+      return res.status(400).json({ success: false, message: "No flag IDs provided" });
+    }
+    
+    const flags = await Flag.find({ _id: { $in: flagIds }, status: "pending" });
+    
+    const results = [];
+    for (const flag of flags) {
+      flag.status = "rejected";
+      flag.resolution = rejectionReason || "Bulk rejected by admin";
+      flag.adminNotes = adminNotes || flag.adminNotes || "";
+      flag.reviewedAt = new Date();
+      await flag.save();
+      
+      results.push({
+        flagId: flag.flagId,
+        docketNumber: flag.docketNumber,
+      });
+      
+      logActivity(
+        "updated",
+        "flag",
+        flag._id,
+        `Flag ${flag.flagId} on ${flag.docketNumber}`,
+        "Bulk rejected"
+      );
+    }
+    
+    res.json({
+      success: true,
+      message: `${results.length} flags rejected successfully`,
+      rejectedCount: results.length,
+    });
+  } catch (error) {
+    console.error("Error bulk rejecting flags:", error);
     res.status(500).json({ success: false, message: error.message });
   }
 });
